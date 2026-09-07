@@ -1,0 +1,214 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
+import {
+  CalendarClock,
+  FileClock,
+  CheckCircle2,
+  XCircle,
+  Users,
+  CalendarPlus,
+  CalendarDays,
+  BookOpen,
+  ArrowRight,
+} from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { StatCard } from "@/components/stat-card";
+import { StatusBadge } from "@/components/appointments/appointment-status";
+import { getGreeting, formatDate, formatTime } from "@/lib/format";
+import { getAppointmentsByStudent } from "@/lib/services/appointments";
+import { getLecturerName, getCourseName } from "@/lib/services/lecturers";
+import { notifications as allNotifications } from "@/lib/mock-data";
+import { NotificationItem } from "@/components/notifications/notification-item";
+import { EmptyState } from "@/components/empty-state";
+import type { Appointment } from "@/lib/types";
+
+const STUDENT_ID = "stud-1";
+
+export default function StudentDashboardPage() {
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
+
+  useEffect(() => {
+    getAppointmentsByStudent(STUDENT_ID).then((data) => {
+      setAppointments(data);
+    });
+  }, []);
+
+  const studentNotifs = useMemo(
+    () =>
+      allNotifications
+        .filter((n) => n.userId === STUDENT_ID)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [],
+  );
+
+  const upcoming = appointments.filter(
+    (a) => ["pending", "approved", "rescheduled"].includes(a.status) &&
+      new Date(a.date) >= new Date(),
+  );
+  const pending = appointments.filter((a) => a.status === "pending");
+  const completed = appointments.filter((a) => a.status === "completed");
+  const cancelled = appointments.filter((a) => a.status === "cancelled");
+
+  const nextAppointment = upcoming.sort(
+    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+  )[0];
+
+  return (
+    <div className="space-y-8">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">
+          {getGreeting()}, John
+        </h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Here is an overview of your consultations.
+        </p>
+      </div>
+
+      {/* Stats */}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard
+          title="Upcoming"
+          value={upcoming.length}
+          icon={CalendarClock}
+          description="Approved & pending"
+        />
+        <StatCard
+          title="Pending Requests"
+          value={pending.length}
+          icon={FileClock}
+          iconClassName="bg-amber-500/10 text-amber-600"
+        />
+        <StatCard
+          title="Completed"
+          value={completed.length}
+          icon={CheckCircle2}
+          iconClassName="bg-green-500/10 text-green-600"
+        />
+        <StatCard
+          title="Cancelled"
+          value={cancelled.length}
+          icon={XCircle}
+          iconClassName="bg-destructive/10 text-destructive"
+        />
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-3">
+        {/* Upcoming appointment */}
+        <div className="lg:col-span-2 space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Upcoming Appointment</CardTitle>
+              <CardDescription>Your next scheduled consultation</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {nextAppointment ? (
+                <div className="space-y-4">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h3 className="text-lg font-semibold">
+                        {getLecturerName(nextAppointment.lecturerId)}
+                      </h3>
+                      <p className="text-sm text-muted-foreground">
+                        {getCourseName(nextAppointment.courseId)}
+                      </p>
+                    </div>
+                    <StatusBadge status={nextAppointment.status} />
+                  </div>
+                  <div className="grid gap-2 text-sm sm:grid-cols-2">
+                    <p className="text-muted-foreground">
+                      <span className="mr-2 inline-block w-12 font-medium text-foreground">Date</span>
+                      {formatDate(nextAppointment.date)}
+                    </p>
+                    <p className="text-muted-foreground">
+                      <span className="mr-2 inline-block w-12 font-medium text-foreground">Time</span>
+                      {formatTime(nextAppointment.startTime)} - {formatTime(nextAppointment.endTime)}
+                    </p>
+                    <p className="text-muted-foreground sm:col-span-2">
+                      <span className="mr-2 inline-block w-12 font-medium text-foreground">
+                        {nextAppointment.type === "online" ? "Online" : "Location"}
+                      </span>
+                      {nextAppointment.type === "online"
+                        ? "Online consultation"
+                        : nextAppointment.location}
+                    </p>
+                  </div>
+                  <div>
+                    <Button variant="outline" size="sm" asChild>
+                      <Link href={`/student/appointments/${nextAppointment.id}`}>
+                        View Details
+                        <ArrowRight className="ml-2 h-3.5 w-3.5" />
+                      </Link>
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <EmptyState
+                  title="No upcoming consultations"
+                  description="Your upcoming consultations will appear here."
+                />
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Quick actions */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Quick Actions</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <Button variant="outline" className="h-auto flex-col gap-2 py-4" asChild>
+                  <Link href="/student/lecturers">
+                    <Users className="h-5 w-5" />
+                    Find Lecturer
+                  </Link>
+                </Button>
+                <Button variant="outline" className="h-auto flex-col gap-2 py-4" asChild>
+                  <Link href="/student/appointments/new">
+                    <CalendarPlus className="h-5 w-5" />
+                    Book Consultation
+                  </Link>
+                </Button>
+                <Button variant="outline" className="h-auto flex-col gap-2 py-4" asChild>
+                  <Link href="/student/calendar">
+                    <CalendarDays className="h-5 w-5" />
+                    View Calendar
+                  </Link>
+                </Button>
+                <Button variant="outline" className="h-auto flex-col gap-2 py-4" asChild>
+                  <Link href="/student/appointments">
+                    <BookOpen className="h-5 w-5" />
+                    View Appointments
+                  </Link>
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Recent notifications */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Recent Notifications</CardTitle>
+            <CardDescription>
+              <Link href="/student/notifications" className="text-primary hover:underline">
+                View all
+              </Link>
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="divide-y">
+            {studentNotifs.slice(0, 4).map((notif) => (
+              <NotificationItem key={notif.id} notification={notif} />
+            ))}
+            {studentNotifs.length === 0 && (
+              <EmptyState title="No notifications" />
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
