@@ -9,13 +9,24 @@ import interactionPlugin from "@fullcalendar/interaction";
 import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { LoadingState } from "@/components/loading-state";
+import { ErrorState } from "@/components/error-state";
 import { getAppointmentsByLecturer } from "@/lib/services/appointments";
-import { getAvailabilityForLecturer, getDayLabel } from "@/lib/services/availability";
+import {
+  getAvailabilityExceptions,
+  getAvailabilityForLecturer,
+} from "@/lib/services/availability";
+import { getCurrentLecturer } from "@/lib/supabase/auth";
 import { getStudentById } from "@/lib/services/users";
 import { getCourseName } from "@/lib/services/lecturers";
-import type { Appointment, AppointmentStatus, AvailabilityRule } from "@/lib/types";
+import { dayNameToIndex } from "@/lib/scheduling/datetime";
+import type {
+  Appointment,
+  AppointmentStatus,
+  AvailabilityException,
+  AvailabilityRule,
+} from "@/lib/types";
 
-const LECTURER_ID = "lec-1";
+const MOCK_LECTURER_ID = "lec-1";
 
 const statusColors: Record<AppointmentStatus, string> = {
   pending: "#f59e0b",
@@ -31,17 +42,30 @@ export default function LecturerCalendarPage() {
   const router = useRouter();
   const [appointments, setAppointments] = React.useState<Appointment[]>([]);
   const [rules, setRules] = React.useState<AvailabilityRule[]>([]);
+  const [exceptions, setExceptions] = React.useState<AvailabilityException[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [loadError, setLoadError] = React.useState(false);
 
   React.useEffect(() => {
-    Promise.all([
-      getAppointmentsByLecturer(LECTURER_ID),
-      getAvailabilityForLecturer(LECTURER_ID),
-    ]).then(([appts, avails]) => {
-      setAppointments(appts);
-      setRules(avails);
-      setLoading(false);
-    });
+    const load = async () => {
+      try {
+        const current = await getCurrentLecturer().catch(() => null);
+        const lecturerId = current?.lecturer.id ?? MOCK_LECTURER_ID;
+        const [appts, avails, exs] = await Promise.all([
+          getAppointmentsByLecturer(lecturerId),
+          getAvailabilityForLecturer(lecturerId),
+          getAvailabilityExceptions(lecturerId),
+        ]);
+        setAppointments(appts);
+        setRules(avails);
+        setExceptions(exs);
+      } catch {
+        setLoadError(true);
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
   }, []);
 
   if (loading) {
@@ -53,17 +77,32 @@ export default function LecturerCalendarPage() {
     );
   }
 
-  // Build events for appointments
+  if (loadError) {
+    return (
+      <div>
+        <PageHeader title="Calendar" />
+        <ErrorState
+          title="Could not load calendar"
+          description="Please check your connection and try again."
+          onRetry={() => window.location.reload()}
+        />
+      </div>
+    );
+  }
+
+  const toDateTime = (date: string, time: string): string =>
+    date.includes("T") ? date : `${date}T${time}`;
+
+  // Build events for appointments (domain carries explicit start/end).
   const appointmentEvents = appointments
     .filter((a) => a.status !== "rejected")
     .map((a) => {
       const student = getStudentById(a.studentId);
-      const end = new Date(new Date(a.date).getTime() + 30 * 60000).toISOString();
       return {
         id: a.id,
         title: `${student?.fullName ?? "Student"} - ${getCourseName(a.courseId)}`,
-        start: a.date,
-        end,
+        start: toDateTime(a.date, a.startTime),
+        end: toDateTime(a.date, a.endTime),
         backgroundColor: statusColors[a.status],
         borderColor: statusColors[a.status],
         textColor: "#ffffff",
@@ -72,40 +111,37 @@ export default function LecturerCalendarPage() {
       };
     });
 
-  // Build availability events (recurring-ish, shown as background for the current week display)
-  // For simplicity, show availability as all-day markers on each rule day using a generated date
-  const availabilityEvents = rules.map((rule) => {
-    const dayIndex = {
-      sunday: 0,
-      monday: 1,
-      tuesday: 2,
-      wednesday: 3,
-      thursday: 4,
-      friday: 5,
-      saturday: 6,
-    }[rule.dayOfWeek];
+  // Recurring weekly availability as background events (FullCalendar expands
+  // daysOfWeek occurrences itself — no manual week math needed).
+  const availabilityEvents = rules.map((rule) => ({
+    id: `avail-${rule.id}`,
+    title: "Available",
+    daysOfWeek: [dayNameToIndex(rule.dayOfWeek)],
+    startTime: rule.startTime,
+    endTime: rule.endTime,
+    display: "background",
+    backgroundColor: "#e2e8f0",
+    borderColor: "#94a3b8",
+    textColor: "#475569",
+    classNames: ["availability-slot"],
+    extendedProps: { kind: "availability" },
+  }));
 
-    // Create a date for this week's matching day
-    const today = new Date();
-    const diff = (dayIndex - today.getDay() + 7) % 7;
-    const date = new Date(today);
-    date.setDate(today.getDate() + diff);
+  // Unavailable exception periods as red background blocks.
+  const exceptionEvents = exceptions.map((ex) => ({
+    id: `ex-${ex.id}`,
+    title: ex.reason || "Unavailable",
+    start: ex.startDatetime,
+    end: ex.endDatetime,
+    display: "background",
+    backgroundColor: "#fecaca",
+    borderColor: "#f87171",
+    textColor: "#991b1b",
+    classNames: ["exception-slot"],
+    extendedProps: { kind: "exception" },
+  }));
 
-    return {
-      id: `avail-${rule.id}`,
-      title: `Available ${getDayLabel(rule.dayOfWeek)}`,
-      start: `${date.toISOString().slice(0, 10)}T${rule.startTime}`,
-      end: `${date.toISOString().slice(0, 10)}T${rule.endTime}`,
-      backgroundColor: "#e2e8f0",
-      borderColor: "#94a3b8",
-      textColor: "#475569",
-      display: "background",
-      classNames: ["availability-slot"],
-      extendedProps: { kind: "availability" },
-    };
-  });
-
-  const allEvents = [...appointmentEvents, ...availabilityEvents];
+  const allEvents = [...appointmentEvents, ...availabilityEvents, ...exceptionEvents];
 
   return (
     <div className="space-y-6">
@@ -122,6 +158,7 @@ export default function LecturerCalendarPage() {
         <Badge className="bg-gray-400 text-white">Cancelled</Badge>
         <Badge className="bg-red-500 text-white">No-show</Badge>
         <Badge className="bg-slate-200 text-slate-600">Available</Badge>
+        <Badge className="bg-red-200 text-red-800">Unavailable</Badge>
       </div>
 
       <div className="fc-container p-2">

@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
+import { CheckCircle2 } from "lucide-react";
 import { AuthLayout } from "@/components/auth/auth-layout";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -19,6 +20,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { isSupabaseConfigured } from "@/lib/supabase/client";
+import {
+  dashboardPathForRole,
+  ensureUserProfile,
+  getCurrentProfile,
+  getSessionUserId,
+  isPathForRole,
+  isSafeNextPath,
+  mapSignInError,
+  signIn,
+} from "@/lib/supabase/auth";
+import type { DbRole } from "@/lib/supabase/database.types";
 import type { UserRole } from "@/lib/types";
 
 const loginSchema = z.object({
@@ -29,9 +42,27 @@ const loginSchema = z.object({
 
 type LoginValues = z.infer<typeof loginSchema>;
 
-export default function LoginPage() {
+function resolveTarget(role: DbRole, next: string | null): string {
+  if (next && isSafeNextPath(next) && isPathForRole(next, role)) {
+    return next;
+  }
+  return dashboardPathForRole(role);
+}
+
+function LoginForm() {
   const router = useRouter();
-  const [error, setError] = useState<string | null>(null);
+  const searchParams = useSearchParams();
+  const next = searchParams.get("next");
+  const justConfirmed = searchParams.get("confirmed") === "1";
+  const urlError = searchParams.get("error");
+  const [configured] = useState(() => isSupabaseConfigured());
+  const [error, setError] = useState<string | null>(
+    urlError === "expired"
+      ? "That link has expired. Please request a new one."
+      : urlError
+        ? "That link is invalid. Please try again."
+        : null,
+  );
   const [loading, setLoading] = useState(false);
 
   const {
@@ -49,105 +80,130 @@ export default function LoginPage() {
     },
   });
 
+  // Already signed in → bounce to the role dashboard (or safe `next`).
+  useEffect(() => {
+    if (!configured) return;
+    let cancelled = false;
+    getSessionUserId()
+      .then(async (id) => {
+        if (!id || cancelled) return;
+        const profile = await getCurrentProfile();
+        if (!profile || cancelled) return;
+        router.replace(resolveTarget(profile.role, next));
+      })
+      .catch(() => {
+        // No usable session — stay on the login form.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [configured, router, next]);
+
   const onSubmit = async (values: LoginValues) => {
     setLoading(true);
     setError(null);
 
-    // Demo mock login - forward to role demo selection
-    // In production, this will be Supabase Auth
-    const demoEmail = values.email.toLowerCase();
-    if (demoEmail.includes("@university.edu") || demoEmail.includes("schoolemail.edu")) {
+    if (!configured) {
+      // Legacy mock preview (no Supabase configured): route by email hint.
+      const demoEmail = values.email.toLowerCase();
+      await new Promise((r) => setTimeout(r, 800));
       if (demoEmail.includes("sarah") || demoEmail.includes("lec")) {
-        await new Promise((r) => setTimeout(r, 800));
         router.push("/lecturer/dashboard");
         return;
       }
       if (demoEmail.includes("admin")) {
-        await new Promise((r) => setTimeout(r, 800));
         router.push("/admin/dashboard");
         return;
       }
-      await new Promise((r) => setTimeout(r, 800));
       router.push("/student/dashboard");
       return;
     }
 
-    setLoading(false);
-    setError(
-      "No account found for this email. Try john.mensah@schoolemail.edu or creates an account.",
-    );
+    try {
+      const session = await signIn({
+        email: values.email,
+        password: values.password,
+      });
+      const profile = await ensureUserProfile({
+        userId: session.userId,
+        email: session.email,
+        fullName: session.fullName,
+        role: session.role,
+      });
+      router.push(resolveTarget(profile.role, next));
+      router.refresh();
+    } catch (e) {
+      setLoading(false);
+      setError(mapSignInError(e instanceof Error ? e.message : ""));
+    }
   };
 
   return (
-    <AuthLayout
-      title="Welcome back"
-      description="Sign in to your account to continue"
-      footer={
-        <>
-          Don&apos;t have an account?{" "}
-          <Link href="/register" className="font-medium text-primary hover:underline">
-            Create one
-          </Link>
-        </>
-      }
-    >
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-        <div className="space-y-2">
-          <Label htmlFor="email">Email</Label>
-          <Input
-            id="email"
-            type="email"
-            placeholder="you@university.edu"
-            autoComplete="email"
-            {...register("email")}
-          />
-          {errors.email && (
-            <p className="text-sm text-destructive">{errors.email.message}</p>
-          )}
+    <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+      {justConfirmed && !error && (
+        <div className="flex items-center gap-2 rounded-md bg-primary/10 px-3 py-2 text-sm text-primary">
+          <CheckCircle2 className="h-4 w-4 shrink-0" />
+          Your email is confirmed. Please sign in.
         </div>
+      )}
 
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <Label htmlFor="password">Password</Label>
-            <Link
-              href="/forgot-password"
-              className="text-sm font-medium text-primary hover:underline"
-            >
-              Forgot password?
-            </Link>
-          </div>
-          <PasswordInput
-            id="password"
-            placeholder="Enter your password"
-            autoComplete="current-password"
-            {...register("password")}
-          />
-          {errors.password && (
-            <p className="text-sm text-destructive">{errors.password.message}</p>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2">
-          <Checkbox
-            id="remember"
-            checked={watch("remember")}
-            onCheckedChange={(checked) => setValue("remember", Boolean(checked))}
-          />
-          <Label htmlFor="remember" className="text-sm font-normal">
-            Remember me
-          </Label>
-        </div>
-
-        {error && (
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {error}
-          </div>
+      <div className="space-y-2">
+        <Label htmlFor="email">Email</Label>
+        <Input
+          id="email"
+          type="email"
+          placeholder="you@university.edu"
+          autoComplete="email"
+          {...register("email")}
+        />
+        {errors.email && (
+          <p className="text-sm text-destructive">{errors.email.message}</p>
         )}
+      </div>
 
-        <Button type="submit" className="w-full" disabled={loading}>
-          {loading ? "Signing in..." : "Sign in"}
-        </Button>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <Label htmlFor="password">Password</Label>
+          <Link
+            href="/forgot-password"
+            className="text-sm font-medium text-primary hover:underline"
+          >
+            Forgot password?
+          </Link>
+        </div>
+        <PasswordInput
+          id="password"
+          placeholder="Enter your password"
+          autoComplete="current-password"
+          {...register("password")}
+        />
+        {errors.password && (
+          <p className="text-sm text-destructive">{errors.password.message}</p>
+        )}
+      </div>
 
+      <div className="flex items-center gap-2">
+        <Checkbox
+          id="remember"
+          checked={watch("remember")}
+          onCheckedChange={(checked) => setValue("remember", Boolean(checked))}
+        />
+        <Label htmlFor="remember" className="text-sm font-normal">
+          Remember me
+        </Label>
+      </div>
+
+      {error && (
+        <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
+      <Button type="submit" className="w-full" disabled={loading}>
+        {loading ? "Signing in..." : "Sign in"}
+      </Button>
+
+      {!configured && (
         <div className="pt-2">
           <p className="mb-2 text-center text-xs text-muted-foreground">
             Demo: Select a role to preview the interface
@@ -167,7 +223,32 @@ export default function LoginPage() {
             </SelectContent>
           </Select>
         </div>
-      </form>
+      )}
+    </form>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <AuthLayout
+      title="Welcome back"
+      description="Sign in to your account to continue"
+      footer={
+        <>
+          Don&apos;t have an account?{" "}
+          <Link href="/register" className="font-medium text-primary hover:underline">
+            Create one
+          </Link>
+        </>
+      }
+    >
+      <Suspense
+        fallback={
+          <p className="text-center text-sm text-muted-foreground">Loading...</p>
+        }
+      >
+        <LoginForm />
+      </Suspense>
     </AuthLayout>
   );
 }

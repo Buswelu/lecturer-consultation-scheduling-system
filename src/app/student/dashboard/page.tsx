@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   CalendarClock,
   FileClock,
@@ -19,34 +19,62 @@ import { StatCard } from "@/components/stat-card";
 import { StatusBadge } from "@/components/appointments/appointment-status";
 import { getGreeting, formatDate, formatTime } from "@/lib/format";
 import { getAppointmentsByStudent } from "@/lib/services/appointments";
+import { getNotificationsForUser } from "@/lib/services/notifications";
+import { getCurrentProfile } from "@/lib/supabase/auth";
 import { getLecturerName, getCourseName } from "@/lib/services/lecturers";
-import { notifications as allNotifications } from "@/lib/mock-data";
+import { useStudentIdentity } from "@/hooks/useSessionIds";
+import { todayYMD } from "@/lib/scheduling/datetime";
 import { NotificationItem } from "@/components/notifications/notification-item";
 import { EmptyState } from "@/components/empty-state";
-import type { Appointment } from "@/lib/types";
-
-const STUDENT_ID = "stud-1";
+import { LoadingState } from "@/components/loading-state";
+import type { Appointment, Notification } from "@/lib/types";
 
 export default function StudentDashboardPage() {
+  const { studentId, notifUserId, loading: identityLoading } = useStudentIdentity();
   const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [notifs, setNotifs] = useState<Notification[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [profileName, setProfileName] = useState<string | null>(null);
 
   useEffect(() => {
-    getAppointmentsByStudent(STUDENT_ID).then((data) => {
-      setAppointments(data);
-    });
-  }, []);
+    // Real authenticated profile for the welcome message; falls back to
+    // the demo name when Supabase is unconfigured (mock preview mode).
+    getCurrentProfile()
+      .then((profile) => {
+        if (profile) setProfileName(profile.full_name);
+      })
+      .catch(() => {
+        // Keep the fallback name.
+      });
+    if (identityLoading || !studentId || !notifUserId) return;
+    Promise.all([
+      getAppointmentsByStudent(studentId),
+      getNotificationsForUser(notifUserId),
+    ])
+      .then(([appts, notifications]) => {
+        setAppointments(appts);
+        setNotifs(
+          [...notifications].sort(
+            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+          ),
+        );
+      })
+      .catch(() => undefined)
+      .finally(() => setLoading(false));
+  }, [identityLoading, studentId, notifUserId]);
 
-  const studentNotifs = useMemo(
-    () =>
-      allNotifications
-        .filter((n) => n.userId === STUDENT_ID)
-        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
-    [],
-  );
+  if (identityLoading || loading) {
+    return (
+      <div className="space-y-8">
+        <LoadingState rows={6} />
+      </div>
+    );
+  }
 
+  const today = todayYMD();
   const upcoming = appointments.filter(
     (a) => ["pending", "approved", "rescheduled"].includes(a.status) &&
-      new Date(a.date) >= new Date(),
+      a.date.slice(0, 10) >= today,
   );
   const pending = appointments.filter((a) => a.status === "pending");
   const completed = appointments.filter((a) => a.status === "completed");
@@ -60,7 +88,7 @@ export default function StudentDashboardPage() {
     <div className="space-y-8">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">
-          {getGreeting()}, John
+          {getGreeting()}, {profileName ?? "John"}
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Here is an overview of your consultations.
@@ -109,10 +137,10 @@ export default function StudentDashboardPage() {
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <h3 className="text-lg font-semibold">
-                        {getLecturerName(nextAppointment.lecturerId)}
+                        {nextAppointment.lecturerName ?? getLecturerName(nextAppointment.lecturerId)}
                       </h3>
                       <p className="text-sm text-muted-foreground">
-                        {getCourseName(nextAppointment.courseId)}
+                        {nextAppointment.courseName ?? getCourseName(nextAppointment.courseId)}
                       </p>
                     </div>
                     <StatusBadge status={nextAppointment.status} />
@@ -200,10 +228,10 @@ export default function StudentDashboardPage() {
             </CardDescription>
           </CardHeader>
           <CardContent className="divide-y">
-            {studentNotifs.slice(0, 4).map((notif) => (
+            {notifs.slice(0, 4).map((notif) => (
               <NotificationItem key={notif.id} notification={notif} />
             ))}
-            {studentNotifs.length === 0 && (
+            {notifs.length === 0 && (
               <EmptyState title="No notifications" />
             )}
           </CardContent>

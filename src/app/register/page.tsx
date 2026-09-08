@@ -6,6 +6,7 @@ import { useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
+import { MailCheck } from "lucide-react";
 import { AuthLayout } from "@/components/auth/auth-layout";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -18,6 +19,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { isSupabaseConfigured } from "@/lib/supabase/client";
+import {
+  dashboardPathForRole,
+  ensureUserProfile,
+  mapSignUpError,
+  sanitizePublicRole,
+  signUp,
+} from "@/lib/supabase/auth";
 import type { UserRole } from "@/lib/types";
 
 const registerSchema = z
@@ -41,6 +50,8 @@ export default function RegisterPage() {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [confirmationSent, setConfirmationSent] = useState(false);
+  const [registeredEmail, setRegisteredEmail] = useState("");
 
   const {
     register,
@@ -63,16 +74,72 @@ export default function RegisterPage() {
     setLoading(true);
     setError(null);
 
-    // Demo registration - in production this will use Supabase Auth
-    await new Promise((r) => setTimeout(r, 800));
-    setLoading(false);
+    if (!isSupabaseConfigured()) {
+      // Legacy mock preview (no Supabase configured).
+      await new Promise((r) => setTimeout(r, 800));
+      setLoading(false);
+      if (values.role === "lecturer") {
+        router.push("/lecturer/dashboard");
+      } else {
+        router.push("/student/dashboard");
+      }
+      return;
+    }
 
-    if (values.role === "lecturer") {
-      router.push("/lecturer/dashboard");
-    } else {
-      router.push("/student/dashboard");
+    try {
+      const role = sanitizePublicRole(values.role);
+      const result = await signUp({
+        email: values.email,
+        password: values.password,
+        fullName: values.fullName,
+        role,
+        emailRedirectTo: `${window.location.origin}/auth/confirm?next=/login`,
+      });
+
+      if (result.needsConfirmation) {
+        setRegisteredEmail(values.email);
+        setConfirmationSent(true);
+        setLoading(false);
+        return;
+      }
+
+      // Session active immediately — provision profile rows, then enter.
+      const profile = await ensureUserProfile({
+        userId: result.userId,
+        email: values.email,
+        fullName: values.fullName,
+        role,
+      });
+      router.push(dashboardPathForRole(profile.role));
+      router.refresh();
+    } catch (e) {
+      setLoading(false);
+      setError(mapSignUpError(e instanceof Error ? e.message : ""));
     }
   };
+
+  if (confirmationSent) {
+    return (
+      <AuthLayout
+        title="Check your email"
+        description="Confirm your account to finish signing up"
+      >
+        <div className="flex flex-col items-center text-center">
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10">
+            <MailCheck className="h-7 w-7 text-primary" />
+          </div>
+          <h2 className="mt-4 font-semibold">Confirmation email sent</h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Please check your email{registeredEmail ? ` (${registeredEmail})` : ""} to
+            confirm your account, then sign in.
+          </p>
+          <Button variant="outline" className="mt-6 w-full" asChild>
+            <Link href="/login">Back to login</Link>
+          </Button>
+        </div>
+      </AuthLayout>
+    );
+  }
 
   return (
     <AuthLayout

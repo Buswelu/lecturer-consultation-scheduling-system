@@ -67,7 +67,7 @@ export default function AdminAppointmentsPage() {
       result = result.filter((a) => {
         const studentName = (userNames[a.studentId] ?? "").toLowerCase();
         const lecturerName = (userNames[a.lecturerId] ?? "").toLowerCase();
-        const courseName = getCourseName(a.courseId).toLowerCase();
+        const courseName = (a.courseName ?? getCourseName(a.courseId)).toLowerCase();
         return (
           studentName.includes(q) ||
           lecturerName.includes(q) ||
@@ -103,9 +103,9 @@ export default function AdminAppointmentsPage() {
     {
       key: "course",
       header: "Course",
-      sortValue: (a) => getCourseName(a.courseId),
+      sortValue: (a) => a.courseName ?? getCourseName(a.courseId),
       cell: (a) => (
-        <span className="text-sm text-muted-foreground">{getCourseName(a.courseId)}</span>
+        <span className="text-sm text-muted-foreground">{a.courseName ?? getCourseName(a.courseId)}</span>
       ),
     },
     {

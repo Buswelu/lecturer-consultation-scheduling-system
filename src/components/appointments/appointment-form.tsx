@@ -19,14 +19,27 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { LoadingState } from "@/components/loading-state";
 import { formatDate, formatTime } from "@/lib/format";
-import {
-  getLecturerName,
-  getCourseName,
-  getLecturers,
-} from "@/lib/services/lecturers";
+import { getLecturers } from "@/lib/services/lecturers";
 import { getCourses } from "@/lib/services/users";
-import { format as formatDateFns, parseISO } from "date-fns";
+import {
+  createAppointment,
+  BookingConflictError,
+} from "@/lib/services/appointments";
+import {
+  getAvailableSlots,
+  getDayLabel,
+  type Slot,
+} from "@/lib/services/availability";
+import { useStudentIdentity } from "@/hooks/useSessionIds";
+import {
+  addDaysYMD,
+  dayIndexToName,
+  parseYMD,
+  todayYMD,
+  weekdayIndexYMD,
+} from "@/lib/scheduling/datetime";
 import type { LecturerProfile, Course, ConsultationType } from "@/lib/types";
 
 const bookSchema = z.object({
@@ -44,29 +57,31 @@ type BookValues = z.infer<typeof bookSchema>;
 
 const steps = ["Lecturer", "Course & Date", "Time & Type", "Reason", "Review"];
 
-// Mock available time slots per day for the selected lecturer
-const mockSlots: { start: string; end: string }[] = [
-  { start: "09:00", end: "09:30" },
-  { start: "09:30", end: "10:00" },
-  { start: "10:00", end: "10:30" },
-  { start: "10:30", end: "11:00" },
-  { start: "11:00", end: "11:30" },
-  { start: "14:00", end: "14:30" },
-  { start: "14:30", end: "15:00" },
-  { start: "15:00", end: "15:30" },
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
 ];
 
-// Mock booked slots
-const bookedSlotKeys = new Set(["2026-09-15:10:00", "2026-09-16:14:00"]);
+/** Timezone-safe "Monday, September 15, 2026" label for a YMD date. */
+function formatDayLabel(ymd: string): string {
+  const { y, m, d } = parseYMD(ymd);
+  return `${getDayLabel(dayIndexToName(weekdayIndexYMD(ymd)))}, ${MONTHS[m - 1]} ${d}, ${y}`;
+}
 
 export function AppointmentForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { studentId } = useStudentIdentity();
   const [step, setStep] = React.useState(0);
   const [submitted, setSubmitted] = React.useState(false);
+  const [createdId, setCreatedId] = React.useState<string | null>(null);
   const [lecturers, setLecturers] = React.useState<LecturerProfile[]>([]);
   const [courses, setCourses] = React.useState<Course[]>([]);
   const [submitting, setSubmitting] = React.useState(false);
+  const [submitError, setSubmitError] = React.useState<string | null>(null);
+  const [slotsByDate, setSlotsByDate] = React.useState<Record<string, Slot[]>>({});
+  const [slotsLoading, setSlotsLoading] = React.useState(false);
+  const preselected = React.useRef(false);
 
   const initialLecturer = searchParams.get("lecturerId") ?? "";
   const initialDate = searchParams.get("date") ?? "";
@@ -102,20 +117,64 @@ export function AppointmentForm() {
 
   const values = watch();
   const lecturer = lecturers.find((l) => l.id === values.lecturerId);
+  const selectedCourse = courses.find((c) => c.id === values.courseId);
 
-  const availableDates = React.useMemo(() => {
-    const dates: string[] = [];
-    const now = new Date();
-    for (let i = 1; i <= 14; i++) {
-      const d = new Date(now);
-      d.setDate(d.getDate() + i);
-      const day = d.getDay();
-      if (day !== 0 && day !== 6) {
-        dates.push(formatDateFns(d, "yyyy-MM-dd"));
-      }
+  // Load real slots for the chosen lecturer (next 30 days). Resets any
+  // stale date/slot when the lecturer changes (except URL preselection).
+  React.useEffect(() => {
+    if (!values.lecturerId) {
+      setSlotsByDate({});
+      return;
     }
-    return dates;
-  }, []);
+    let cancelled = false;
+    setSlotsLoading(true);
+    const today = todayYMD();
+    getAvailableSlots({
+      lecturerId: values.lecturerId,
+      from: today,
+      to: addDaysYMD(today, 30),
+    })
+      .then((map) => {
+        if (cancelled) return;
+        setSlotsByDate(map);
+        if (!preselected.current) {
+          preselected.current = true;
+          // Keep URL-preselected slot only if still bookable.
+          const preselectedSlot = (map[initialDate] ?? []).find(
+            (s) => s.startTime === initialStart && s.status === "available",
+          );
+          if (!preselectedSlot && (initialDate || initialStart)) {
+            setValue("date", "");
+            setValue("startTime", "");
+            setValue("endTime", "");
+          }
+        } else {
+          setValue("date", "");
+          setValue("startTime", "");
+          setValue("endTime", "");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSlotsByDate({});
+      })
+      .finally(() => {
+        if (!cancelled) setSlotsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [values.lecturerId]);
+
+  const availableDates = React.useMemo(
+    () =>
+      Object.keys(slotsByDate)
+        .sort()
+        .filter((d) => slotsByDate[d].some((s) => s.status === "available")),
+    [slotsByDate],
+  );
+
+  const daySlots = values.date ? (slotsByDate[values.date] ?? []) : [];
 
   const validateStep = (): boolean => {
     if (step === 0) return Boolean(values.lecturerId);
@@ -133,11 +192,56 @@ export function AppointmentForm() {
 
   const handleBack = () => setStep((s) => Math.max(s - 1, 0));
 
-  const onSubmit = async () => {
+  const refreshSlots = async () => {
+    if (!values.lecturerId) return;
+    const today = todayYMD();
+    try {
+      const map = await getAvailableSlots({
+        lecturerId: values.lecturerId,
+        from: today,
+        to: addDaysYMD(today, 30),
+      });
+      setSlotsByDate(map);
+    } catch {
+      // Keep existing slots on refresh failure.
+    }
+  };
+
+  const onSubmit = async (formValues: BookValues) => {
     setSubmitting(true);
-    await new Promise((r) => setTimeout(r, 800));
-    setSubmitting(false);
-    setSubmitted(true);
+    setSubmitError(null);
+    try {
+      if (!studentId) {
+        throw new Error("Your student account could not be resolved. Please sign in again.");
+      }
+      const created = await createAppointment({
+        studentId,
+        lecturerId: formValues.lecturerId,
+        courseId: formValues.courseId,
+        date: formValues.date,
+        startTime: formValues.startTime,
+        endTime: formValues.endTime,
+        type: formValues.type,
+        reason: formValues.reason,
+        notes: formValues.notes || undefined,
+        location:
+          formValues.type === "in-person" ? (lecturer?.office ?? "On campus") : undefined,
+      });
+      setCreatedId(created.id);
+      setSubmitted(true);
+    } catch (e) {
+      if (e instanceof BookingConflictError) {
+        setSubmitError(e.message);
+        setValue("startTime", "");
+        setValue("endTime", "");
+        await refreshSlots();
+        setStep(2);
+      } else {
+        setSubmitError(e instanceof Error ? e.message : "We couldn't submit your request.");
+      }
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const selectLecturerCourses = courses.filter(
@@ -151,17 +255,24 @@ export function AppointmentForm() {
           <div className="flex h-14 w-14 items-center justify-center rounded-full bg-green-500/10">
             <CheckCircle2 className="h-8 w-8 text-green-600" />
           </div>
-          <h2 className="mt-4 text-xl font-bold">Request Submitted!</h2>
+          <h2 className="mt-4 text-xl font-bold">Consultation request submitted successfully.</h2>
           <p className="mt-2 max-w-md text-sm text-muted-foreground">
-            Your consultation request has been submitted for approval. You will be
-            notified once {getLecturerName(values.lecturerId)} responds.
+            Your consultation request is pending review. You will be notified once{" "}
+            {lecturer?.fullName ?? "the lecturer"} responds.
           </p>
           <div className="mt-6 flex gap-3">
-            <Button variant="outline" onClick={() => router.push("/student/appointments")}>
-              View Appointments
+            <Button
+              variant="outline"
+              onClick={() =>
+                createdId
+                  ? router.push(`/student/appointments/${createdId}`)
+                  : router.push("/student/appointments")
+              }
+            >
+              View Appointment
             </Button>
-            <Button onClick={() => router.push("/student/dashboard")}>
-              Go to Dashboard
+            <Button onClick={() => router.push("/student/appointments")}>
+              View My Appointments
             </Button>
           </div>
         </CardContent>
@@ -211,7 +322,7 @@ export function AppointmentForm() {
                 <SelectContent>
                   {lecturers.map((l) => (
                     <SelectItem key={l.id} value={l.id}>
-                      {l.fullName} - {getCourseName(l.courses[0] ?? "")}
+                      {l.fullName}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -255,21 +366,29 @@ export function AppointmentForm() {
 
               <div className="space-y-2">
                 <Label htmlFor="date">Date</Label>
-                <Select
-                  value={values.date}
-                  onValueChange={(v) => setValue("date", v, { shouldValidate: true })}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Select a date" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {availableDates.map((d) => (
-                      <SelectItem key={d} value={d}>
-                        {formatDateFns(parseISO(d), "EEEE, MMMM d, yyyy")}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {slotsLoading ? (
+                  <LoadingState rows={1} />
+                ) : (
+                  <Select
+                    value={values.date}
+                    onValueChange={(v) => {
+                      setValue("date", v, { shouldValidate: true });
+                      setValue("startTime", "");
+                      setValue("endTime", "");
+                    }}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Select a date" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableDates.map((d) => (
+                        <SelectItem key={d} value={d}>
+                          {formatDayLabel(d)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
                 {errors.date && (
                   <p className="text-sm text-destructive">{errors.date.message}</p>
                 )}
@@ -282,28 +401,33 @@ export function AppointmentForm() {
               <div className="space-y-2">
                 <Label>Available Time Slots</Label>
                 {values.date ? (
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                    {mockSlots.map((slot) => {
-                      const key = `${values.date}:${slot.start}`;
-                      const isBooked = bookedSlotKeys.has(key);
-                      const isSelected = values.startTime === slot.start;
-                      return (
-                        <Button
-                          key={slot.start}
-                          type="button"
-                          variant={isSelected ? "default" : "outline"}
-                          disabled={isBooked}
-                          onClick={() => {
-                            setValue("startTime", slot.start, { shouldValidate: true });
-                            setValue("endTime", slot.end, { shouldValidate: true });
-                          }}
-                          className={isBooked ? "pointer-events-none opacity-50 line-through" : ""}
-                        >
-                          {formatTime(slot.start)} - {formatTime(slot.end)}
-                        </Button>
-                      );
-                    })}
-                  </div>
+                  daySlots.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      No slots on this date. Please choose another date.
+                    </p>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                      {daySlots.map((slot) => {
+                        const selectable = slot.status === "available";
+                        const isSelected = values.startTime === slot.startTime;
+                        return (
+                          <Button
+                            key={slot.startTime}
+                            type="button"
+                            variant={isSelected ? "default" : "outline"}
+                            disabled={!selectable}
+                            onClick={() => {
+                              setValue("startTime", slot.startTime, { shouldValidate: true });
+                              setValue("endTime", slot.endTime, { shouldValidate: true });
+                            }}
+                            className={!selectable ? "pointer-events-none opacity-50 line-through" : ""}
+                          >
+                            {formatTime(slot.startTime)} - {formatTime(slot.endTime)}
+                          </Button>
+                        );
+                      })}
+                    </div>
+                  )
                 ) : (
                   <p className="text-sm text-muted-foreground">
                     Please select a date first in the previous step.
@@ -373,14 +497,12 @@ export function AppointmentForm() {
                 <dl className="grid gap-3 text-sm sm:grid-cols-2">
                   <div>
                     <dt className="text-xs text-muted-foreground">Lecturer</dt>
-                    <dd className="font-medium">
-                      {values.lecturerId ? getLecturerName(values.lecturerId) : "—"}
-                    </dd>
+                    <dd className="font-medium">{lecturer?.fullName ?? "—"}</dd>
                   </div>
                   <div>
                     <dt className="text-xs text-muted-foreground">Course</dt>
                     <dd className="font-medium">
-                      {values.courseId ? getCourseName(values.courseId) : "—"}
+                      {selectedCourse ? `${selectedCourse.title} (${selectedCourse.code})` : "—"}
                     </dd>
                   </div>
                   <div>
@@ -423,6 +545,12 @@ export function AppointmentForm() {
                   </>
                 )}
               </div>
+            </div>
+          )}
+
+          {submitError && (
+            <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {submitError}
             </div>
           )}
 

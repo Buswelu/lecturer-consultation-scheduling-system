@@ -12,11 +12,14 @@ import type { LecturerProfile } from "@/lib/types";
 interface LecturerCardProps {
   lecturer: LecturerProfile;
   available?: boolean;
+  /** Live display names (preferred when present; falls back to mock lookups). */
+  departmentName?: string;
+  courseNames?: string[];
 }
 
-export function LecturerCard({ lecturer, available = true }: LecturerCardProps) {
-  const departmentName = getDepartmentName(lecturer.departmentId);
-  const courseNames = lecturer.courses.slice(0, 3).map(getCourseName);
+export function LecturerCard({ lecturer, available = true, departmentName, courseNames }: LecturerCardProps) {
+  const resolvedDept = departmentName ?? getDepartmentName(lecturer.departmentId);
+  const resolvedCourses = courseNames ?? lecturer.courses.slice(0, 3).map(getCourseName);
 
   return (
     <Card className="overflow-hidden">
@@ -37,17 +40,17 @@ export function LecturerCard({ lecturer, available = true }: LecturerCardProps) 
             </div>
             <p className="mt-1 line-clamp-1 text-sm text-muted-foreground flex items-center gap-1.5">
               <Building2 className="h-3.5 w-3.5 shrink-0" />
-              {departmentName}
+              {resolvedDept}
             </p>
           </div>
         </div>
 
         <div className="mt-4 space-y-2">
-          {courseNames.length > 0 && (
+          {resolvedCourses.length > 0 && (
             <p className="flex items-start gap-1.5 text-sm">
               <BookOpen className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               <span className="line-clamp-2 text-muted-foreground">
-                {courseNames.join(", ")}
+                {resolvedCourses.join(", ")}
               </span>
             </p>
           )}

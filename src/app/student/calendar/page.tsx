@@ -7,28 +7,49 @@ import { ConsultationCalendar } from "@/components/calendar/consultation-calenda
 import { Badge } from "@/components/ui/badge";
 import { LoadingState } from "@/components/loading-state";
 import { EmptyState } from "@/components/empty-state";
+import { ErrorState } from "@/components/error-state";
 import { getAppointmentsByStudent } from "@/lib/services/appointments";
+import { useStudentIdentity } from "@/hooks/useSessionIds";
 import type { Appointment } from "@/lib/types";
-
-const STUDENT_ID = "stud-1";
 
 export default function StudentCalendarPage() {
   const router = useRouter();
+  const { studentId, loading: identityLoading } = useStudentIdentity();
   const [appointments, setAppointments] = React.useState<Appointment[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [loadError, setLoadError] = React.useState(false);
 
   React.useEffect(() => {
-    getAppointmentsByStudent(STUDENT_ID).then((data) => {
-      setAppointments(data);
-      setLoading(false);
-    });
-  }, []);
+    if (identityLoading || !studentId) return;
+    getAppointmentsByStudent(studentId)
+      .then((data) => {
+        setAppointments(data);
+        setLoading(false);
+      })
+      .catch(() => {
+        setLoadError(true);
+        setLoading(false);
+      });
+  }, [identityLoading, studentId]);
 
-  if (loading) {
+  if (identityLoading || loading) {
     return (
       <div>
         <PageHeader title="My Calendar" />
         <LoadingState rows={3} />
+      </div>
+    );
+  }
+
+  if (loadError || !studentId) {
+    return (
+      <div>
+        <PageHeader title="My Calendar" />
+        <ErrorState
+          title="Could not load calendar"
+          description="Please check your connection and try again."
+          onRetry={() => window.location.reload()}
+        />
       </div>
     );
   }

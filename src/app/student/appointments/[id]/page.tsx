@@ -2,18 +2,8 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
-import {
-  ArrowLeft,
-  CalendarDays,
-  Clock,
-  MapPin,
-  Video,
-  FileText,
-  CalendarPlus,
-  User,
-  Info,
-} from "lucide-react";
+import { useParams } from "next/navigation";
+import { ArrowLeft, CalendarDays, Clock, MapPin, Video, FileText, User, Info } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -22,40 +12,53 @@ import { Breadcrumbs } from "@/components/breadcrumbs";
 import { LoadingState } from "@/components/loading-state";
 import { ErrorState } from "@/components/error-state";
 import { ConfirmationDialog } from "@/components/confirmation-dialog";
-import { getAppointmentById, updateAppointmentStatus } from "@/lib/services/appointments";
+import { cancelAppointment, getAppointmentById } from "@/lib/services/appointments";
 import { getLecturerName, getCourseName } from "@/lib/services/lecturers";
-import { getStudentById } from "@/lib/services/users";
+import { getCurrentProfile } from "@/lib/supabase/auth";
 import { formatDate, formatTime, formatDateTime } from "@/lib/format";
 import type { Appointment } from "@/lib/types";
 
 export default function StudentAppointmentDetailPage() {
   const params = useParams<{ id: string }>();
-  const router = useRouter();
   const [appointment, setAppointment] = React.useState<Appointment | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [cancelOpen, setCancelOpen] = React.useState(false);
   const [cancelling, setCancelling] = React.useState(false);
+  const [actionError, setActionError] = React.useState<string | null>(null);
+  const [viewerName, setViewerName] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     const load = async () => {
-      const data = await getAppointmentById(params.id);
-      setAppointment(data);
-      setLoading(false);
+      try {
+        const data = await getAppointmentById(params.id);
+        setAppointment(data);
+      } catch {
+        setAppointment(null);
+      } finally {
+        setLoading(false);
+      }
     };
     load();
+    getCurrentProfile()
+      .then((p) => {
+        if (p) setViewerName(p.full_name);
+      })
+      .catch(() => undefined);
   }, [params.id]);
 
   const handleCancel = async () => {
     if (!appointment) return;
     setCancelling(true);
-    await updateAppointmentStatus(
-      appointment.id,
-      "cancelled",
-      "Cancelled by student",
-    );
-    setAppointment({ ...appointment, status: "cancelled" });
-    setCancelling(false);
-    setCancelOpen(false);
+    setActionError(null);
+    try {
+      const updated = await cancelAppointment(appointment.id, "student");
+      setAppointment(updated);
+      setCancelOpen(false);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Could not cancel the appointment.");
+    } finally {
+      setCancelling(false);
+    }
   };
 
   if (loading) {
@@ -70,13 +73,14 @@ export default function StudentAppointmentDetailPage() {
     return (
       <ErrorState
         title="Appointment not found"
-        description="This appointment may no longer exist."
+        description="This appointment may no longer exist, or you may not have access to it."
         onRetry={() => window.location.reload()}
       />
     );
   }
 
-  const student = getStudentById(appointment.studentId);
+  const lecturerName = appointment.lecturerName ?? getLecturerName(appointment.lecturerId);
+  const courseName = appointment.courseName ?? getCourseName(appointment.courseId);
   const now = new Date();
   const apptDate = new Date(appointment.date);
   const isUpcoming = apptDate >= now && ["pending", "approved", "rescheduled"].includes(appointment.status);
@@ -86,7 +90,7 @@ export default function StudentAppointmentDetailPage() {
       <Breadcrumbs
         items={[
           { label: "Appointments", href: "/student/appointments" },
-          { label: `#${params.id.slice(5)}` },
+          { label: `#${params.id.slice(0, 8)}` },
         ]}
       />
 
@@ -99,14 +103,20 @@ export default function StudentAppointmentDetailPage() {
         </Button>
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-2xl font-bold tracking-tight">
-            {getCourseName(appointment.courseId)}
+            {courseName}
           </h1>
           <StatusBadge status={appointment.status} />
         </div>
         <p className="mt-1 text-sm text-muted-foreground">
-          Consultation with {getLecturerName(appointment.lecturerId)}
+          Consultation with {lecturerName}
         </p>
       </div>
+
+      {actionError && (
+        <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {actionError}
+        </div>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
@@ -121,14 +131,14 @@ export default function StudentAppointmentDetailPage() {
                     <User className="h-3.5 w-3.5" />
                     Lecturer
                   </dt>
-                  <dd className="mt-1 font-medium">{getLecturerName(appointment.lecturerId)}</dd>
+                  <dd className="mt-1 font-medium">{lecturerName}</dd>
                 </div>
                 <div>
                   <dt className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                     <User className="h-3.5 w-3.5" />
                     Student
                   </dt>
-                  <dd className="mt-1 font-medium">{student?.fullName ?? "You"}</dd>
+                  <dd className="mt-1 font-medium">{appointment.studentName ?? viewerName ?? "You"}</dd>
                 </div>
                 <div>
                   <dt className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
@@ -136,7 +146,7 @@ export default function StudentAppointmentDetailPage() {
                     Course
                   </dt>
                   <dd className="mt-1 font-medium">
-                    {getCourseName(appointment.courseId)} ({appointment.courseId.split("-")[1]?.toUpperCase()})
+                    {courseName}
                   </dd>
                 </div>
                 <div>
@@ -207,15 +217,6 @@ export default function StudentAppointmentDetailPage() {
           {isUpcoming && (
             <Card>
               <CardContent className="flex flex-wrap gap-3 p-6">
-                {["pending", "approved"].includes(appointment.status) && (
-                  <Button
-                    variant="outline"
-                    onClick={() => router.push(`/student/appointments/new?reschedule=${appointment.id}`)}
-                  >
-                    <CalendarPlus className="mr-2 h-4 w-4" />
-                    Reschedule
-                  </Button>
-                )}
                 <Button
                   variant="destructive"
                   onClick={() => setCancelOpen(true)}
@@ -253,9 +254,10 @@ export default function StudentAppointmentDetailPage() {
       <ConfirmationDialog
         open={cancelOpen}
         onOpenChange={setCancelOpen}
-        title="Cancel appointment?"
+        title="Cancel Consultation?"
         description="Are you sure you want to cancel this consultation?"
-        confirmLabel="Cancel appointment"
+        confirmLabel="Cancel Consultation"
+        cancelLabel="Keep Appointment"
         variant="destructive"
         onConfirm={handleCancel}
         loading={cancelling}

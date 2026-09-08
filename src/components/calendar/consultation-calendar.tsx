@@ -20,6 +20,11 @@ const statusColors: Record<AppointmentStatus, string> = {
   "no-show": "#ef4444",
 };
 
+/** Domain date (YMD live, ISO mock) + HH:mm → FullCalendar datetime. */
+function toDateTime(date: string, time: string): string {
+  return date.includes("T") ? date : `${date}T${time}`;
+}
+
 interface ConsultationCalendarProps {
   appointments: Appointment[];
   onEventClick: (appointmentId: string) => void;
@@ -33,9 +38,9 @@ export function ConsultationCalendar({
 }: ConsultationCalendarProps) {
   const events = appointments.map((appt) => ({
     id: appt.id,
-    title: `${getLecturerName(appt.lecturerId)} - ${getCourseName(appt.courseId)}`,
-    start: appt.date,
-    end: new Date(new Date(appt.date).getTime() + 30 * 60000).toISOString(),
+    title: `${appt.lecturerName ?? getLecturerName(appt.lecturerId)} - ${appt.courseName ?? getCourseName(appt.courseId)}`,
+    start: toDateTime(appt.date, appt.startTime),
+    end: toDateTime(appt.date, appt.endTime),
     backgroundColor: statusColors[appt.status],
     borderColor: statusColors[appt.status],
     textColor: "#ffffff",

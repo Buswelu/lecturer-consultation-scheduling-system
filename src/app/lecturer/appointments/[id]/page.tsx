@@ -24,11 +24,20 @@ import { Breadcrumbs } from "@/components/breadcrumbs";
 import { LoadingState } from "@/components/loading-state";
 import { ErrorState } from "@/components/error-state";
 import { ConfirmationDialog } from "@/components/confirmation-dialog";
-import { getAppointmentById, updateAppointmentStatus } from "@/lib/services/appointments";
+import { RescheduleDialog } from "@/components/appointments/reschedule-dialog";
+import {
+  approveAppointment,
+  cancelAppointment,
+  getAppointmentById,
+  markCompleted,
+  markNoShow,
+  rejectAppointment,
+  rescheduleAppointment,
+} from "@/lib/services/appointments";
 import { getStudentById } from "@/lib/services/users";
 import { getCourseName } from "@/lib/services/lecturers";
 import { formatDate, formatTime, formatDateTime } from "@/lib/format";
-import type { Appointment, AppointmentStatus } from "@/lib/types";
+import type { Appointment } from "@/lib/types";
 
 export default function LecturerAppointmentDetailPage() {
   const params = useParams<{ id: string }>();
@@ -36,52 +45,74 @@ export default function LecturerAppointmentDetailPage() {
   const [loading, setLoading] = React.useState(true);
   const [action, setAction] = React.useState<{ type: string } | null>(null);
   const [processing, setProcessing] = React.useState(false);
+  const [actionError, setActionError] = React.useState<string | null>(null);
+  const [rescheduling, setRescheduling] = React.useState(false);
+  const [rescheduleError, setRescheduleError] = React.useState<string | null>(null);
 
+  // Initial load only (mutations update state from return values).
   React.useEffect(() => {
-    getAppointmentById(params.id).then((data) => {
-      setAppointment(data);
-      setLoading(false);
-    });
+    let cancelled = false;
+    getAppointmentById(params.id)
+      .then((data) => {
+        if (cancelled) return;
+        setAppointment(data);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAppointment(null);
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [params.id]);
 
-  const handleAction = async () => {
+  const handleAction = async (reason?: string) => {
     if (!appointment || !action) return;
     setProcessing(true);
+    setActionError(null);
 
-    let status: AppointmentStatus;
-    let desc: string;
-
-    switch (action.type) {
-      case "approve":
-        status = "approved";
-        desc = "Request approved by lecturer";
-        break;
-      case "reject":
-        status = "rejected";
-        desc = "Request rejected by lecturer";
-        break;
-      case "complete":
-        status = "completed";
-        desc = "Consultation marked as completed";
-        break;
-      case "no-show":
-        status = "no-show";
-        desc = "Student marked as no-show";
-        break;
-      case "cancel":
-        status = "cancelled";
-        desc = "Cancelled by lecturer";
-        break;
-      default:
-        setProcessing(false);
-        setAction(null);
-        return;
+    try {
+      switch (action.type) {
+        case "approve":
+          setAppointment(await approveAppointment(appointment.id));
+          break;
+        case "reject":
+          setAppointment(await rejectAppointment(appointment.id, reason));
+          break;
+        case "complete":
+          setAppointment(await markCompleted(appointment.id));
+          break;
+        case "no-show":
+          setAppointment(await markNoShow(appointment.id));
+          break;
+        case "cancel":
+          setAppointment(await cancelAppointment(appointment.id, "lecturer"));
+          break;
+        default:
+          return;
+      }
+      setAction(null);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Could not complete the action.");
+    } finally {
+      setProcessing(false);
     }
+  };
 
-    await updateAppointmentStatus(appointment.id, status, desc);
-    setAppointment({ ...appointment, status });
-    setProcessing(false);
-    setAction(null);
+  const handleReschedule = async (slot: { date: string; startTime: string; endTime: string }) => {
+    if (!appointment) return;
+    setRescheduling(true);
+    setRescheduleError(null);
+    try {
+      setAppointment(await rescheduleAppointment(appointment.id, slot));
+      setAction(null);
+    } catch (e) {
+      setRescheduleError(e instanceof Error ? e.message : "Could not reschedule.");
+    } finally {
+      setRescheduling(false);
+    }
   };
 
   if (loading) {
@@ -96,13 +127,15 @@ export default function LecturerAppointmentDetailPage() {
     return (
       <ErrorState
         title="Appointment not found"
-        description="This appointment may no longer exist."
+        description="This appointment may no longer exist, or you may not have access to it."
         onRetry={() => window.location.reload()}
       />
     );
   }
 
-  const student = getStudentById(appointment.studentId);
+  const studentName =
+    appointment.studentName ?? getStudentById(appointment.studentId)?.fullName ?? "Student";
+  const courseName = appointment.courseName ?? getCourseName(appointment.courseId);
 
   const confirmConfig = action
     ? {
@@ -144,7 +177,7 @@ export default function LecturerAppointmentDetailPage() {
       <Breadcrumbs
         items={[
           { label: "Appointments", href: "/lecturer/appointments" },
-          { label: `#${params.id.slice(5)}` },
+          { label: `#${params.id.slice(0, 8)}` },
         ]}
       />
 
@@ -157,14 +190,20 @@ export default function LecturerAppointmentDetailPage() {
         </Button>
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-2xl font-bold tracking-tight">
-            {getCourseName(appointment.courseId)}
+            {courseName}
           </h1>
           <StatusBadge status={appointment.status} />
         </div>
         <p className="mt-1 text-sm text-muted-foreground">
-          Consultation with {student?.fullName ?? "Student"}
+          Consultation with {studentName}
         </p>
       </div>
+
+      {actionError && (
+        <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {actionError}
+        </div>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
@@ -179,14 +218,14 @@ export default function LecturerAppointmentDetailPage() {
                     <User className="h-3.5 w-3.5" />
                     Student
                   </dt>
-                  <dd className="mt-1 font-medium">{student?.fullName ?? "—"}</dd>
+                  <dd className="mt-1 font-medium">{studentName === "Student" ? "—" : studentName}</dd>
                 </div>
                 <div>
                   <dt className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                     <FileText className="h-3.5 w-3.5" />
                     Course
                   </dt>
-                  <dd className="mt-1 font-medium">{getCourseName(appointment.courseId)}</dd>
+                  <dd className="mt-1 font-medium">{courseName}</dd>
                 </div>
                 <div>
                   <dt className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
@@ -283,6 +322,11 @@ export default function LecturerAppointmentDetailPage() {
                     </Button>
                   </>
                 )}
+                {["pending", "approved"].includes(appointment.status) && (
+                  <Button variant="outline" onClick={() => setAction({ type: "reschedule" })}>
+                    Suggest Another Time
+                  </Button>
+                )}
                 <Button
                   variant="destructive"
                   onClick={() => setAction({ type: "cancel" })}
@@ -301,15 +345,11 @@ export default function LecturerAppointmentDetailPage() {
               <CardTitle>Student</CardTitle>
             </CardHeader>
             <CardContent>
-              {student ? (
+              {studentName !== "Student" ? (
                 <div className="flex items-center gap-3">
-                  <Avatar alt={student.fullName} fallback={student.fullName} />
+                  <Avatar alt={studentName} fallback={studentName} />
                   <div>
-                    <p className="font-medium">{student.fullName}</p>
-                    <p className="text-sm text-muted-foreground">{student.email}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {student.programme ?? ""}
-                    </p>
+                    <p className="font-medium">{studentName}</p>
                   </div>
                 </div>
               ) : (
@@ -341,7 +381,7 @@ export default function LecturerAppointmentDetailPage() {
       </div>
 
       <ConfirmationDialog
-        open={!!action}
+        open={!!action && action.type !== "reschedule"}
         onOpenChange={(open) => !open && setAction(null)}
         title={confirmConfig?.title ?? "Confirm"}
         description={confirmConfig?.desc}
@@ -349,6 +389,24 @@ export default function LecturerAppointmentDetailPage() {
         variant={confirmConfig?.variant ?? "default"}
         onConfirm={handleAction}
         loading={processing}
+        input={
+          action?.type === "reject"
+            ? {
+                label: "Reason for rejection",
+                placeholder: "Explain briefly why this request cannot be accommodated…",
+              }
+            : undefined
+        }
+      />
+
+      <RescheduleDialog
+        key={action?.type === "reschedule" && appointment ? `res-${appointment.id}` : "closed"}
+        open={action?.type === "reschedule"}
+        onOpenChange={(open) => !open && setAction(null)}
+        appointment={action?.type === "reschedule" ? appointment : null}
+        onConfirm={handleReschedule}
+        confirming={rescheduling}
+        error={rescheduleError}
       />
     </div>
   );

@@ -2,7 +2,6 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { CalendarPlus, ArrowRight, CalendarDays, Clock, MapPin } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
@@ -12,13 +11,14 @@ import { StatusBadge } from "@/components/appointments/appointment-status";
 import { Badge } from "@/components/ui/badge";
 import { LoadingState } from "@/components/loading-state";
 import { EmptyState } from "@/components/empty-state";
+import { ErrorState } from "@/components/error-state";
 import { ConfirmationDialog } from "@/components/confirmation-dialog";
-import { getAppointmentsByStudent, updateAppointmentStatus } from "@/lib/services/appointments";
+import { cancelAppointment, getAppointmentsByStudent } from "@/lib/services/appointments";
 import { getLecturerName, getCourseName } from "@/lib/services/lecturers";
+import { useStudentIdentity } from "@/hooks/useSessionIds";
+import { todayYMD } from "@/lib/scheduling/datetime";
 import { formatDate, formatTime } from "@/lib/format";
-import type { Appointment, AppointmentStatus } from "@/lib/types";
-
-const STUDENT_ID = "stud-1";
+import type { Appointment } from "@/lib/types";
 
 type TabKey = "all" | "pending" | "upcoming" | "completed" | "cancelled";
 
@@ -30,31 +30,61 @@ const tabs: { key: TabKey; label: string }[] = [
   { key: "cancelled", label: "Cancelled" },
 ];
 
+const UPCOMING_STATUSES = ["pending", "approved", "rescheduled"];
+const CANCELLABLE_STATUSES = ["pending", "approved", "rescheduled"];
+
 export default function StudentAppointmentsPage() {
-  const router = useRouter();
+  const { studentId, loading: identityLoading } = useStudentIdentity();
   const [appointments, setAppointments] = React.useState<Appointment[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [loadError, setLoadError] = React.useState(false);
   const [cancelId, setCancelId] = React.useState<string | null>(null);
   const [cancelling, setCancelling] = React.useState(false);
+  const [actionError, setActionError] = React.useState<string | null>(null);
 
-  React.useEffect(() => {
-    const load = async () => {
-      const data = await getAppointmentsByStudent(STUDENT_ID);
+  const load = React.useCallback(async () => {
+    if (!studentId) return;
+    try {
+      const data = await getAppointmentsByStudent(studentId);
       setAppointments(data);
+      setLoadError(false);
+    } catch {
+      setLoadError(true);
+    } finally {
       setLoading(false);
+    }
+  }, [studentId]);
+
+  // Initial load only — `load` above is for event handlers, so the effect
+  // inlines its own fetch chain (React Compiler friendly).
+  React.useEffect(() => {
+    if (identityLoading || !studentId) return;
+    let cancelled = false;
+    getAppointmentsByStudent(studentId)
+      .then((data) => {
+        if (cancelled) return;
+        setAppointments(data);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLoadError(true);
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
     };
-    load();
-  }, []);
+  }, [identityLoading, studentId]);
 
   const filterByTab = (tab: TabKey): Appointment[] => {
+    const today = todayYMD();
     if (tab === "all") return appointments;
     if (tab === "pending")
       return appointments.filter((a) => a.status === "pending");
     if (tab === "upcoming")
       return appointments.filter(
         (a) =>
-          ["pending", "approved", "rescheduled"].includes(a.status) &&
-          new Date(a.date) >= new Date(),
+          UPCOMING_STATUSES.includes(a.status) && a.date.slice(0, 10) >= today,
       );
     if (tab === "completed")
       return appointments.filter((a) => a.status === "completed");
@@ -64,21 +94,40 @@ export default function StudentAppointmentsPage() {
   const handleCancel = async () => {
     if (!cancelId) return;
     setCancelling(true);
-    await updateAppointmentStatus(cancelId, "cancelled", "Cancelled by student");
-    setAppointments((prev) =>
-      prev.map((a) =>
-        a.id === cancelId ? { ...a, status: "cancelled" as AppointmentStatus } : a,
-      ),
-    );
-    setCancelling(false);
-    setCancelId(null);
+    setActionError(null);
+    try {
+      await cancelAppointment(cancelId, "student");
+      setCancelId(null);
+      await load();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Could not cancel the appointment.");
+    } finally {
+      setCancelling(false);
+    }
   };
 
-  if (loading) {
+  if (identityLoading || loading) {
     return (
       <div>
         <PageHeader title="My Appointments" />
         <LoadingState rows={5} />
+      </div>
+    );
+  }
+
+  if (loadError || !studentId) {
+    return (
+      <div>
+        <PageHeader title="My Appointments" />
+        <ErrorState
+          title="Could not load appointments"
+          description={
+            studentId
+              ? "Please check your connection and try again."
+              : "Your student account could not be resolved. Please sign in again."
+          }
+          onRetry={load}
+        />
       </div>
     );
   }
@@ -97,6 +146,12 @@ export default function StudentAppointmentsPage() {
           </Button>
         }
       />
+
+      {actionError && (
+        <div className="mt-4 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {actionError}
+        </div>
+      )}
 
       <Tabs defaultValue="all" className="mt-6">
         <TabsList className="flex w-full flex-wrap justify-start overflow-x-auto sm:w-auto">
@@ -136,10 +191,10 @@ export default function StudentAppointmentsPage() {
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <h3 className="truncate font-semibold">
-                              {getLecturerName(appt.lecturerId)}
+                              {appt.lecturerName ?? getLecturerName(appt.lecturerId)}
                             </h3>
                             <p className="mt-1 text-sm text-muted-foreground">
-                              {getCourseName(appt.courseId)}
+                              {appt.courseName ?? getCourseName(appt.courseId)}
                             </p>
                           </div>
                           <div className="flex shrink-0 flex-col items-end gap-1">
@@ -174,16 +229,7 @@ export default function StudentAppointmentsPage() {
                               <ArrowRight className="ml-2 h-3.5 w-3.5" />
                             </Link>
                           </Button>
-                          {["pending", "approved", "rescheduled"].includes(appt.status) && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => router.push(`/student/appointments/${appt.id}?reschedule=1`)}
-                            >
-                              Reschedule
-                            </Button>
-                          )}
-                          {["pending", "approved", "rescheduled"].includes(appt.status) && (
+                          {CANCELLABLE_STATUSES.includes(appt.status) && (
                             <Button
                               size="sm"
                               variant="destructive"
@@ -206,9 +252,10 @@ export default function StudentAppointmentsPage() {
       <ConfirmationDialog
         open={!!cancelId}
         onOpenChange={(open) => !open && setCancelId(null)}
-        title="Cancel appointment?"
-        description="Are you sure you want to cancel this appointment? This action cannot be undone."
-        confirmLabel="Cancel appointment"
+        title="Cancel Consultation?"
+        description="Are you sure you want to cancel this consultation?"
+        confirmLabel="Cancel Consultation"
+        cancelLabel="Keep Appointment"
         variant="destructive"
         onConfirm={handleCancel}
         loading={cancelling}

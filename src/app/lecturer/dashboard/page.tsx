@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   CalendarClock,
   FileClock,
@@ -16,33 +16,151 @@ import { StatCard } from "@/components/stat-card";
 import { StatusBadge } from "@/components/appointments/appointment-status";
 import { Badge } from "@/components/ui/badge";
 import { getGreeting, formatDate, formatTime, formatDateLong } from "@/lib/format";
-import { getAppointmentsByLecturer } from "@/lib/services/appointments";
+import {
+  approveAppointment,
+  getAppointmentsByLecturer,
+  rejectAppointment,
+  rescheduleAppointment,
+} from "@/lib/services/appointments";
+import { getCurrentProfile } from "@/lib/supabase/auth";
 import { getStudentById } from "@/lib/services/users";
 import { getCourseName } from "@/lib/services/lecturers";
+import { useLecturerIdentity } from "@/hooks/useSessionIds";
+import { todayYMD } from "@/lib/scheduling/datetime";
 import { EmptyState } from "@/components/empty-state";
+import { LoadingState } from "@/components/loading-state";
+import { ErrorState } from "@/components/error-state";
+import { ConfirmationDialog } from "@/components/confirmation-dialog";
+import { RescheduleDialog } from "@/components/appointments/reschedule-dialog";
 import type { Appointment } from "@/lib/types";
 
-const LECTURER_ID = "lec-1";
-
 export default function LecturerDashboardPage() {
+  const { lecturerId, loading: identityLoading } = useLecturerIdentity();
   const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [profileName, setProfileName] = useState<string | null>(null);
+  const [action, setAction] = useState<{ id: string; type: string } | null>(null);
+  const [processing, setProcessing] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [rescheduling, setRescheduling] = useState(false);
+  const [rescheduleError, setRescheduleError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!lecturerId) return;
+    try {
+      const data = await getAppointmentsByLecturer(lecturerId);
+      setAppointments(data);
+      setLoadError(false);
+    } catch {
+      setLoadError(true);
+    } finally {
+      setLoading(false);
+    }
+  }, [lecturerId]);
 
   useEffect(() => {
-    getAppointmentsByLecturer(LECTURER_ID).then((data) => {
-      setAppointments(data);
-    });
+    // Real authenticated profile for the welcome message; falls back to
+    // the demo name when Supabase is unconfigured (mock preview mode).
+    getCurrentProfile()
+      .then((profile) => {
+        if (profile) setProfileName(profile.full_name);
+      })
+      .catch(() => {
+        // Keep the fallback name.
+      });
   }, []);
 
-  const today = new Date();
+  // Initial load only — `load` above is for event handlers, so the effect
+  // inlines its own fetch chain (React Compiler friendly).
+  useEffect(() => {
+    if (identityLoading || !lecturerId) return;
+    let cancelled = false;
+    getAppointmentsByLecturer(lecturerId)
+      .then((data) => {
+        if (cancelled) return;
+        setAppointments(data);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLoadError(true);
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [identityLoading, lecturerId]);
+
+  const handleAction = async (reason?: string) => {
+    if (!action) return;
+    setProcessing(true);
+    setActionError(null);
+    try {
+      if (action.type === "approve") await approveAppointment(action.id);
+      else if (action.type === "reject") await rejectAppointment(action.id, reason);
+      else return;
+      setAction(null);
+      await load();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Could not complete the action.");
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const rescheduleTarget =
+    action?.type === "suggest"
+      ? (appointments.find((a) => a.id === action.id) ?? null)
+      : null;
+
+  const handleReschedule = async (slot: { date: string; startTime: string; endTime: string }) => {
+    if (!rescheduleTarget) return;
+    setRescheduling(true);
+    setRescheduleError(null);
+    try {
+      await rescheduleAppointment(rescheduleTarget.id, slot);
+      setAction(null);
+      await load();
+    } catch (e) {
+      setRescheduleError(e instanceof Error ? e.message : "Could not reschedule.");
+    } finally {
+      setRescheduling(false);
+    }
+  };
+
+  if (identityLoading || loading) {
+    return (
+      <div className="space-y-8">
+        <LoadingState rows={6} />
+      </div>
+    );
+  }
+
+  if (loadError || !lecturerId) {
+    return (
+      <div className="space-y-8">
+        <ErrorState
+          title="Could not load dashboard"
+          description={
+            lecturerId
+              ? "Please check your connection and try again."
+              : "Your lecturer account could not be resolved. Please sign in again."
+          }
+          onRetry={load}
+        />
+      </div>
+    );
+  }
+
+  const today = todayYMD();
   const todayAppts = appointments.filter(
-    (a) =>
-      new Date(a.date).toDateString() === today.toDateString() &&
-      a.status === "approved",
+    (a) => a.date.slice(0, 10) === today && a.status === "approved",
   );
   const pending = appointments.filter((a) => a.status === "pending");
   const upcoming = appointments.filter(
     (a) =>
-      ["approved", "rescheduled"].includes(a.status) && new Date(a.date) >= today,
+      ["approved", "rescheduled"].includes(a.status) && a.date.slice(0, 10) >= today,
   );
   const completed = appointments.filter((a) => a.status === "completed");
 
@@ -54,12 +172,18 @@ export default function LecturerDashboardPage() {
     <div className="space-y-8">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">
-          {getGreeting()}, Dr. Sarah
+          {getGreeting()}, {profileName ?? "Dr. Sarah"}
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Here is an overview of your consultation schedule.
         </p>
       </div>
+
+      {actionError && (
+        <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {actionError}
+        </div>
+      )}
 
       {/* Stats */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -109,7 +233,8 @@ export default function LecturerDashboardPage() {
                 />
               ) : (
                 pending.map((appt) => {
-                  const student = getStudentById(appt.studentId);
+                  const studentName =
+                    appt.studentName ?? getStudentById(appt.studentId)?.fullName ?? "Student";
                   return (
                     <div
                       key={appt.id}
@@ -117,9 +242,9 @@ export default function LecturerDashboardPage() {
                     >
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
-                          <p className="font-semibold">{student?.fullName ?? "Student"}</p>
+                          <p className="font-semibold">{studentName}</p>
                           <p className="mt-1 text-sm text-muted-foreground">
-                            {getCourseName(appt.courseId)}
+                            {appt.courseName ?? getCourseName(appt.courseId)}
                           </p>
                         </div>
                       <StatusBadge status={appt.status} />
@@ -139,15 +264,27 @@ export default function LecturerDashboardPage() {
                         {appt.reason}
                       </p>
                       <div className="flex flex-wrap gap-2">
-                        <Button size="sm" variant="default">
+                        <Button
+                          size="sm"
+                          variant="default"
+                          onClick={() => setAction({ id: appt.id, type: "approve" })}
+                        >
                           <Check className="mr-1.5 h-4 w-4" />
                           Approve
                         </Button>
-                        <Button size="sm" variant="outline">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setAction({ id: appt.id, type: "reject" })}
+                        >
                           <X className="mr-1.5 h-4 w-4" />
                           Reject
                         </Button>
-                        <Button size="sm" variant="outline">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setAction({ id: appt.id, type: "suggest" })}
+                        >
                           <CalendarClock className="mr-1.5 h-4 w-4" />
                           Suggest Time
                         </Button>
@@ -174,10 +311,10 @@ export default function LecturerDashboardPage() {
                     <StatusBadge status={nextAppt.status} />
                   </div>
                   <p className="font-semibold">
-                    {getStudentById(nextAppt.studentId)?.fullName ?? "Student"}
+                    {nextAppt.studentName ?? getStudentById(nextAppt.studentId)?.fullName ?? "Student"}
                   </p>
                   <p className="text-sm text-muted-foreground">
-                    {getCourseName(nextAppt.courseId)}
+                    {nextAppt.courseName ?? getCourseName(nextAppt.courseId)}
                   </p>
                   <p className="text-sm text-muted-foreground">
                     {formatDateLong(nextAppt.date)} · {formatTime(nextAppt.startTime)} -{" "}
@@ -230,6 +367,38 @@ export default function LecturerDashboardPage() {
           </Card>
         </div>
       </div>
+
+      <ConfirmationDialog
+        open={!!action && action.type !== "suggest"}
+        onOpenChange={(open) => !open && setAction(null)}
+        title={action?.type === "approve" ? "Approve request?" : "Reject request?"}
+        description={
+          action?.type === "approve"
+            ? "Approve this consultation request?"
+            : "Reject this consultation request? The student will be notified."
+        }
+        confirmLabel={action?.type === "approve" ? "Approve" : "Reject"}
+        variant={action?.type === "approve" ? "default" : "destructive"}
+        onConfirm={handleAction}
+        loading={processing}
+        input={
+          action?.type === "reject"
+            ? {
+                label: "Reason for rejection",
+                placeholder: "Explain briefly why this request cannot be accommodated…",
+              }
+            : undefined
+        }
+      />
+
+      <RescheduleDialog
+        open={!!rescheduleTarget}
+        onOpenChange={(open) => !open && setAction(null)}
+        appointment={rescheduleTarget}
+        onConfirm={handleReschedule}
+        confirming={rescheduling}
+        error={rescheduleError}
+      />
     </div>
   );
 }

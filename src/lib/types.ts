@@ -93,6 +93,10 @@ export interface Appointment {
   createdAt: string;
   updatedAt: string;
   history: AppointmentHistoryEntry[];
+  /** Display names, populated by live reads (batched joins). Absent in mock. */
+  lecturerName?: string;
+  studentName?: string;
+  courseName?: string;
 }
 
 export interface AppointmentHistoryEntry {
@@ -118,6 +122,15 @@ export interface BreakPeriod {
   endTime: string;
 }
 
+/** One-off unavailable period (maps `availability_exceptions`). */
+export interface AvailabilityException {
+  id: string;
+  lecturerId: string;
+  startDatetime: string;
+  endDatetime: string;
+  reason?: string;
+}
+
 export interface Notification {
   id: string;
   userId: string;
@@ -133,5 +146,6 @@ export interface Notification {
     | "reschedule"
     | "reminder"
     | "system";
+  appointmentId?: string;
   createdAt: string;
 }

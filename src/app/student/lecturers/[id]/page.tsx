@@ -21,17 +21,21 @@ import { LoadingState } from "@/components/loading-state";
 import { ErrorState } from "@/components/error-state";
 import { AvailabilityCalendar, type Slot } from "@/components/calendar/availability-calendar";
 import { getLecturerById } from "@/lib/services/lecturers";
-import { getAvailabilityForLecturer } from "@/lib/services/availability";
+import { getAvailabilityExceptions, getAvailabilityForLecturer } from "@/lib/services/availability";
 import { getDepartmentName, getCourseName } from "@/lib/services/lecturers";
 import { getAppointmentsByLecturer } from "@/lib/services/appointments";
-import type { LecturerProfile, AvailabilityRule, Appointment } from "@/lib/types";
+import { getDepartments, getCourses } from "@/lib/services/users";
+import type { LecturerProfile, AvailabilityRule, AvailabilityException, Appointment, Department, Course } from "@/lib/types";
 
 export default function LecturerProfilePage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const [lecturer, setLecturer] = React.useState<LecturerProfile | null>(null);
   const [rules, setRules] = React.useState<AvailabilityRule[]>([]);
+  const [exceptions, setExceptions] = React.useState<AvailabilityException[]>([]);
   const [appointments, setAppointments] = React.useState<Appointment[]>([]);
+  const [departments, setDepartments] = React.useState<Department[]>([]);
+  const [courses, setCourses] = React.useState<Course[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(false);
   const [selectedSlot, setSelectedSlot] = React.useState<Slot | null>(null);
@@ -39,17 +43,23 @@ export default function LecturerProfilePage() {
   React.useEffect(() => {
     const load = async () => {
       try {
-        const [lec, avRules, appts] = await Promise.all([
+        const [lec, avRules, avExceptions, appts, deps, crs] = await Promise.all([
           getLecturerById(params.id),
           getAvailabilityForLecturer(params.id),
+          getAvailabilityExceptions(params.id),
           getAppointmentsByLecturer(params.id),
+          getDepartments(),
+          getCourses(),
         ]);
         if (!lec) {
           setError(true);
         } else {
           setLecturer(lec);
           setRules(avRules);
+          setExceptions(avExceptions);
           setAppointments(appts);
+          setDepartments(deps);
+          setCourses(crs);
         }
       } catch {
         setError(true);
@@ -78,8 +88,12 @@ export default function LecturerProfilePage() {
     );
   }
 
-  const deptName = getDepartmentName(lecturer.departmentId);
-  const courseNames = lecturer.courses.map(getCourseName);
+  const deptName =
+    departments.find((d) => d.id === lecturer.departmentId)?.name ??
+    getDepartmentName(lecturer.departmentId);
+  const courseNames = lecturer.courses.map(
+    (id) => courses.find((c) => c.id === id)?.title ?? getCourseName(id),
+  );
 
   const bookedSlots = appointments
     .filter((a) => ["approved", "pending", "rescheduled"].includes(a.status))
@@ -223,6 +237,7 @@ export default function LecturerProfilePage() {
               <AvailabilityCalendar
                 rules={rules}
                 bookedSlots={bookedSlots}
+                exceptions={exceptions}
                 onSelectSlot={setSelectedSlot}
                 selectedSlot={selectedSlot}
               />

@@ -10,6 +10,8 @@ import { AuthLayout } from "@/components/auth/auth-layout";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { isSupabaseConfigured } from "@/lib/supabase/client";
+import { sendPasswordResetEmail } from "@/lib/supabase/auth";
 
 const forgotSchema = z.object({
   email: z.string().email("Please enter a valid email address"),
@@ -31,13 +33,27 @@ export default function ForgotPasswordPage() {
     defaultValues: { email: "" },
   });
 
-  const onSubmit = async () => {
+  const onSubmit = async (values: ForgotValues) => {
     setLoading(true);
     setError(null);
-    // Demo - in production Supabase Auth will send a reset email
-    await new Promise((r) => setTimeout(r, 800));
-    setLoading(false);
-    setSubmitted(true);
+    try {
+      if (isSupabaseConfigured()) {
+        // Generic outcome either way — never reveals whether the email exists.
+        await sendPasswordResetEmail(
+          values.email,
+          `${window.location.origin}/auth/confirm?next=/reset-password`,
+        );
+      } else {
+        // Legacy mock preview (no Supabase configured).
+        await new Promise((r) => setTimeout(r, 800));
+      }
+      setLoading(false);
+      setSubmitted(true);
+    } catch {
+      setLoading(false);
+      // Still show the generic success screen: do not reveal email existence.
+      setSubmitted(true);
+    }
   };
 
   if (submitted) {

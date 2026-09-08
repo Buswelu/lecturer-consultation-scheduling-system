@@ -17,7 +17,7 @@ import { LoadingState } from "@/components/loading-state";
 import { EmptyState } from "@/components/empty-state";
 import { getLecturers } from "@/lib/services/lecturers";
 import { getDepartments, getCourses } from "@/lib/services/users";
-import { availabilityRules } from "@/lib/mock-data";
+import { getAvailabilityForLecturer } from "@/lib/services/availability";
 import type { LecturerProfile, Department, Course } from "@/lib/types";
 
 type AvailabilityFilter = "all" | "available" | "unavailable";
@@ -33,6 +33,7 @@ export default function LecturerSearchPage() {
   const [lecturers, setLecturers] = React.useState<LecturerProfile[]>([]);
   const [departments, setDepartments] = React.useState<Department[]>([]);
   const [courses, setCourses] = React.useState<Course[]>([]);
+  const [availabilityIds, setAvailabilityIds] = React.useState<Set<string> | null>(null);
 
   React.useEffect(() => {
     const load = async () => {
@@ -48,6 +49,44 @@ export default function LecturerSearchPage() {
     };
     load();
   }, []);
+
+  // Resolve which lecturers currently hold availability rules (live data).
+  // No synchronous reset here: stale ids are simply unused while the
+  // filter is off, and refetched whenever the filter or list changes.
+  React.useEffect(() => {
+    if (availability !== "available" || lecturers.length === 0) {
+      return;
+    }
+    let cancelled = false;
+    Promise.all(
+      lecturers.map((l) =>
+        getAvailabilityForLecturer(l.id).then((rules) => ({
+          id: l.id,
+          has: rules.length > 0,
+        })),
+      ),
+    )
+      .then((rows) => {
+        if (!cancelled) {
+          setAvailabilityIds(new Set(rows.filter((r) => r.has).map((r) => r.id)));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setAvailabilityIds(new Set());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [availability, lecturers]);
+
+  const deptNames = useMemo(
+    () => new Map(departments.map((d) => [d.id, d.name])),
+    [departments],
+  );
+  const courseNames = useMemo(
+    () => new Map(courses.map((c) => [c.id, c.title])),
+    [courses],
+  );
 
   const filtered = useMemo(() => {
     let result = lecturers;
@@ -67,10 +106,8 @@ export default function LecturerSearchPage() {
       result = result.filter((l) => l.courses.includes(courseId));
     }
     if (availability === "available") {
-      const lecturerIdsWithAvailability = new Set(
-        availabilityRules.map((r) => r.lecturerId),
-      );
-      result = result.filter((l) => lecturerIdsWithAvailability.has(l.id));
+      if (!availabilityIds) return [];
+      result = result.filter((l) => availabilityIds.has(l.id));
     }
 
     const sorted = [...result].sort((a, b) => {
@@ -81,7 +118,7 @@ export default function LecturerSearchPage() {
     });
 
     return sorted;
-  }, [lecturers, search, departmentId, courseId, availability, sort, departments]);
+  }, [lecturers, search, departmentId, courseId, availability, availabilityIds, sort, departments]);
 
   const handleReset = () => {
     setSearch("");
@@ -90,6 +127,8 @@ export default function LecturerSearchPage() {
     setAvailability("all");
     setSort("name");
   };
+
+  const resolvingAvailability = availability === "available" && availabilityIds === null;
 
   return (
     <div>
@@ -159,7 +198,7 @@ export default function LecturerSearchPage() {
         </FilterField>
       </FilterPanel>
 
-      {loading ? (
+      {loading || resolvingAvailability ? (
         <LoadingState rows={6} />
       ) : filtered.length === 0 ? (
         <EmptyState
@@ -173,9 +212,19 @@ export default function LecturerSearchPage() {
         />
       ) : (
         <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-          {filtered.map((lecturer) => (
-            <LecturerCard key={lecturer.id} lecturer={lecturer} />
-          ))}
+          {filtered.map((lecturer) => {
+            const resolvedCourses = lecturer.courses
+              .map((id) => courseNames.get(id))
+              .filter((n): n is string => Boolean(n));
+            return (
+              <LecturerCard
+                key={lecturer.id}
+                lecturer={lecturer}
+                departmentName={deptNames.get(lecturer.departmentId)}
+                courseNames={resolvedCourses.length > 0 ? resolvedCourses : undefined}
+              />
+            );
+          })}
         </div>
       )}
     </div>

@@ -1,54 +1,40 @@
 "use client";
 
 import * as React from "react";
-import { format, addDays, isBefore, startOfDay, parseISO } from "date-fns";
+import { format, addDays, startOfDay } from "date-fns";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { AvailabilityRule, DayOfWeek } from "@/lib/types";
+import { CONSULTATION_DURATION_MINUTES } from "@/lib/scheduling/config";
+import {
+  generateSlotsForDate,
+  type AvailabilityWindow,
+  type BreakWindow,
+  type Slot,
+} from "@/lib/scheduling/slots";
+import type { AvailabilityException, AvailabilityRule } from "@/lib/types";
 import { dayOrder } from "@/lib/services/availability";
 
-export interface Slot {
-  date: string;
-  startTime: string;
-  endTime: string;
-  status: "available" | "booked" | "pending" | "past" | "unavailable";
-}
+// Canonical slot types live in the scheduling engine; re-exported so
+// existing importers (`@/components/calendar/availability-calendar`) keep working.
+export type { Slot, SlotStatus } from "@/lib/scheduling/slots";
 
 interface AvailabilityCalendarProps {
   rules: AvailabilityRule[];
   bookedSlots?: { date: string; startTime: string; endTime: string; status?: "booked" | "pending" }[];
+  /** Unavailable periods (Phase 4); subtract from generated slots. */
+  exceptions?: AvailabilityException[];
+  /** Default slot length; per-rule durations win when present. */
+  durationMinutes?: number;
   onSelectSlot?: (slot: Slot) => void;
   selectedSlot?: Slot | null;
-}
-
-function timeToMinutes(time: string): number {
-  const [h, m] = time.split(":").map(Number);
-  return h * 60 + m;
-}
-
-function minutesToTime(minutes: number): string {
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
-}
-
-function dayNameToIndex(day: DayOfWeek): number {
-  const map: Record<DayOfWeek, number> = {
-    sunday: 0,
-    monday: 1,
-    tuesday: 2,
-    wednesday: 3,
-    thursday: 4,
-    friday: 5,
-    saturday: 6,
-  };
-  return map[day];
 }
 
 export function AvailabilityCalendar({
   rules,
   bookedSlots = [],
+  exceptions = [],
+  durationMinutes = CONSULTATION_DURATION_MINUTES,
   onSelectSlot,
   selectedSlot,
 }: AvailabilityCalendarProps) {
@@ -62,76 +48,65 @@ export function AvailabilityCalendar({
     const result: Record<string, Slot[]> = {};
 
     weekDays.forEach((day) => {
-      const dayName = dayOrder.find(
-        (d) => dayNameToIndex(d) === day.getDay(),
-      );
       const dayKey = format(day, "yyyy-MM-dd");
-      if (!dayName) return;
-
-      const rule = rules.find((r) => r.dayOfWeek === dayName);
-      if (!rule) {
+      const weekday = day.getDay(); // 0=Sunday, local week grid
+      const dayRules = rules.filter(
+        (r) => dayOrder.indexOf(r.dayOfWeek) === (weekday + 6) % 7,
+      );
+      if (dayRules.length === 0) {
         result[dayKey] = [];
         return;
       }
 
-      const slots: Slot[] = [];
-      const startMin = timeToMinutes(rule.startTime);
-      const endMin = timeToMinutes(rule.endTime);
-      const breakRanges = (rule.breaks ?? []).map((b) => ({
-        start: timeToMinutes(b.startTime),
-        end: timeToMinutes(b.endTime),
-      }));
+      const blocking = bookedSlots
+        .filter((b) =>
+          b.date.includes("T") ? b.date.slice(0, 10) === dayKey : b.date === dayKey,
+        )
+        .map((b) => ({
+          startTime: b.startTime,
+          endTime: b.endTime,
+          status: b.status ?? "booked",
+        }));
 
-      for (let t = startMin; t + rule.duration <= endMin; t += rule.duration) {
-        const slotStart = minutesToTime(t);
-        const slotEnd = minutesToTime(t + rule.duration);
-
-        const inBreak = breakRanges.some(
-          (br) => !(t + rule.duration <= br.start || t >= br.end),
-        );
-        if (inBreak) {
-          slots.push({
-            date: dayKey,
-            startTime: slotStart,
-            endTime: slotEnd,
-            status: "unavailable",
-          });
-          continue;
+      // Group rules by effective duration so mixed grids (e.g. 30-min and
+      // 45-min rules) each generate correctly, then merge deterministically.
+      const groups = new Map<number, { windows: AvailabilityWindow[]; breaks: BreakWindow[] }>();
+      for (const rule of dayRules) {
+        const duration = rule.duration || durationMinutes;
+        let group = groups.get(duration);
+        if (!group) {
+          group = { windows: [], breaks: [] };
+          groups.set(duration, group);
         }
-
-        const isPast = isBefore(day, today) || (format(day, "yyyy-MM-dd") === format(today, "yyyy-MM-dd") && timeToMinutes(format(new Date(), "HH:mm")) >= t + rule.duration);
-        if (isPast) {
-          slots.push({
-            date: dayKey,
-            startTime: slotStart,
-            endTime: slotEnd,
-            status: "past",
-          });
-          continue;
-        }
-
-        const booked = bookedSlots.find(
-          (b) =>
-            b.date.startsWith(dayKey) && format(parseISO(b.date), "HH:mm") === slotStart,
-        );
-
-        if (booked) {
-          slots.push({
-            date: dayKey,
-            startTime: slotStart,
-            endTime: slotEnd,
-            status: booked.status === "pending" ? "pending" : "booked",
-          });
-        } else {
-          slots.push({
-            date: dayKey,
-            startTime: slotStart,
-            endTime: slotEnd,
-            status: "available",
-          });
+        group.windows.push({ startTime: rule.startTime, endTime: rule.endTime });
+        for (const b of rule.breaks ?? []) {
+          group.breaks.push({ startTime: b.startTime, endTime: b.endTime });
         }
       }
-      result[dayKey] = slots;
+
+      const merged: Slot[] = [];
+      const seen = new Set<string>();
+      for (const [duration, group] of [...groups.entries()].sort((a, b) => a[0] - b[0])) {
+        const generated = generateSlotsForDate({
+          date: dayKey,
+          windows: group.windows,
+          breaks: group.breaks,
+          exceptions: exceptions.map((e) => ({
+            startDatetime: e.startDatetime,
+            endDatetime: e.endDatetime,
+          })),
+          appointments: blocking,
+          durationMinutes: duration,
+        });
+        for (const slot of generated) {
+          const key = `${slot.startTime}-${slot.endTime}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          merged.push(slot);
+        }
+      }
+      merged.sort((a, b) => (a.startTime < b.startTime ? -1 : 1));
+      result[dayKey] = merged;
     });
 
     return result;
