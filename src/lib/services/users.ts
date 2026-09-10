@@ -10,8 +10,8 @@ import type { StudentProfile, LecturerProfile, UserRole } from "@/lib/types";
 // Re-exported from the dedicated reference-data services so existing
 // imports (`@/lib/services/users`) keep working untouched.
 export { getDepartments, getActiveDepartments, getDepartmentById } from "./departments";
-export { getCourses, getCourseById, getCoursesByLecturer } from "./courses";
-export type { CourseFilters } from "./courses";
+export { getCourses, getCourseById, getCoursesByLecturer, createCourse, updateCourse, assignLecturerToCourse } from "./courses";
+export type { CourseFilters, CourseInput, CourseUpdateInput } from "./courses";
 
 const IS_MOCK = false;
 
