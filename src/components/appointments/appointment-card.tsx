@@ -7,10 +7,6 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/appointments/appointment-status";
 import { formatDate, formatTime } from "@/lib/format";
-import {
-  getLecturerName,
-  getCourseName,
-} from "@/lib/services/lecturers";
 import type { Appointment } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -40,10 +36,10 @@ export function AppointmentCard({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h3 className="font-semibold">{getLecturerName(appointment.lecturerId)}</h3>
+              <h3 className="font-semibold">{appointment.lecturerName ?? "Lecturer"}</h3>
               <StatusBadge status={appointment.status} />
             </div>
-            <p className="mt-1 text-sm text-muted-foreground">{getCourseName(appointment.courseId)}</p>
+            <p className="mt-1 text-sm text-muted-foreground">{appointment.courseName ?? "—"}</p>
           </div>
           {!compact && appointment.type === "online" && (
             <Badge variant="outline" className="shrink-0">

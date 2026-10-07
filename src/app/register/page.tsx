@@ -19,14 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { isSupabaseConfigured } from "@/lib/supabase/client";
-import {
-  dashboardPathForRole,
-  ensureUserProfile,
-  mapSignUpError,
-  sanitizePublicRole,
-  signUp,
-} from "@/lib/supabase/auth";
+import { PgAuthClientError, pgRegister } from "@/lib/auth/client";
 import type { UserRole } from "@/lib/types";
 
 const registerSchema = z
@@ -52,6 +45,7 @@ export default function RegisterPage() {
   const [loading, setLoading] = useState(false);
   const [confirmationSent, setConfirmationSent] = useState(false);
   const [registeredEmail, setRegisteredEmail] = useState("");
+  const [registeredUsername, setRegisteredUsername] = useState("");
 
   const {
     register,
@@ -71,50 +65,36 @@ export default function RegisterPage() {
   });
 
   const onSubmit = async (values: RegisterValues) => {
+    if (loading) return;
     setLoading(true);
     setError(null);
 
-    if (!isSupabaseConfigured()) {
-      // Legacy mock preview (no Supabase configured).
-      await new Promise((r) => setTimeout(r, 800));
-      setLoading(false);
-      if (values.role === "lecturer") {
-        router.push("/lecturer/dashboard");
-      } else {
-        router.push("/student/dashboard");
-      }
-      return;
-    }
-
     try {
-      const role = sanitizePublicRole(values.role);
-      const result = await signUp({
+      // Server-side PostgreSQL registration (independent rate limiter runs
+      // first). The role allow-list is enforced server-side — the form only
+      // offers student/lecturer and the backend coerces anything else.
+      const result = await pgRegister({
         email: values.email,
         password: values.password,
         fullName: values.fullName,
-        role,
-        emailRedirectTo: `${window.location.origin}/auth/confirm?next=/login`,
+        role: values.role,
       });
-
-      if (result.needsConfirmation) {
+      setLoading(false);
+      if (result.needsVerification) {
         setRegisteredEmail(values.email);
+        setRegisteredUsername(result.username);
         setConfirmationSent(true);
-        setLoading(false);
         return;
       }
-
-      // Session active immediately — provision profile rows, then enter.
-      const profile = await ensureUserProfile({
-        userId: result.userId,
-        email: values.email,
-        fullName: values.fullName,
-        role,
-      });
-      router.push(dashboardPathForRole(profile.role));
+      router.push("/login");
       router.refresh();
-    } catch (e) {
+    } catch (err) {
       setLoading(false);
-      setError(mapSignUpError(e instanceof Error ? e.message : ""));
+      setError(
+        err instanceof PgAuthClientError
+          ? err.message
+          : "Unable to create your account. Please try again.",
+      );
     }
   };
 
@@ -133,6 +113,16 @@ export default function RegisterPage() {
             Please check your email{registeredEmail ? ` (${registeredEmail})` : ""} to
             confirm your account, then sign in.
           </p>
+          {registeredUsername && (
+            <p className="mt-3 rounded-md bg-muted px-3 py-2 text-sm">
+              Your registration number:{" "}
+              <span className="font-semibold">{registeredUsername}</span>
+              <br />
+              <span className="text-muted-foreground">
+                Use it (or your email) to sign in.
+              </span>
+            </p>
+          )}
           <Button variant="outline" className="mt-6 w-full" asChild>
             <Link href="/login">Back to login</Link>
           </Button>

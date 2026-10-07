@@ -17,15 +17,53 @@ import { getUsers } from "@/lib/services/users";
 import { getAppointments } from "@/lib/services/appointments";
 import type { Appointment } from "@/lib/types";
 
+/** Controlled table overview: name + purpose (counts come from the API). */
+const TABLE_PURPOSES: [string, string][] = [
+  ["users", "Login identity (identifier, email, password hash)"],
+  ["profiles", "Display name + authoritative role"],
+  ["students", "Student details + registration numbers"],
+  ["lecturers", "Lecturer details + staff numbers"],
+  ["departments", "Academic departments"],
+  ["courses", "Courses"],
+  ["lecturer_courses", "Lecturer–course assignments"],
+  ["availability", "Recurring weekly availability"],
+  ["availability_exceptions", "One-off unavailable periods"],
+  ["appointments", "Consultation bookings"],
+  ["appointment_history", "Immutable appointment audit trail"],
+  ["notifications", "In-app notifications"],
+  ["sessions", "Active login sessions (hashes only)"],
+  ["auth_rate_limits", "Brute-force counters (no secrets)"],
+  ["schema_migrations", "Applied migration tracking"],
+];
+
 export default function AdminDashboardPage() {
   const [users, setUsers] = useState<Awaited<ReturnType<typeof getUsers>>>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [overview, setOverview] = useState<{
+    tables: Record<string, number>;
+    usersByRole: Record<string, number>;
+    usersActive: number;
+    usersInactive: number;
+    appointmentsByStatus: Record<string, number>;
+    availability: { lecturersWithAvailability: number; rules: number; exceptions: number };
+    notifications: { total: number; unread: number };
+    activeSessions: number;
+    rateLimits: { keys: number; blocked: number };
+  } | null>(null);
 
   useEffect(() => {
     Promise.all([getUsers(), getAppointments()]).then(([u, a]) => {
       setUsers(u);
       setAppointments(a);
     });
+    // PostgreSQL system overview (admin-only endpoint, counts only — no
+    // secrets, no SQL execution). Failures hide the section, not the page.
+    fetch("/api/admin/overview")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && data.ok) setOverview(data);
+      })
+      .catch(() => undefined);
   }, []);
 
   const students = users.filter((u) => u.role === "student");
@@ -172,8 +210,100 @@ export default function AdminDashboardPage() {
         </Card>
       </div>
 
-      {/* Quick links */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {/* System overview (PostgreSQL, admin-only counts) */}
+      {overview && (
+        <Card>
+          <CardHeader>
+            <CardTitle>System Overview</CardTitle>
+            <CardDescription>
+              Live PostgreSQL counts. The web admin never exposes credentials,
+              hashes, tokens, or SQL execution — use pgAdmin for database
+              management.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="mb-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <StatCard
+                title="Admin Accounts"
+                value={overview.usersByRole.admin ?? 0}
+                icon={Users}
+              />
+              <StatCard
+                title="Active Users"
+                value={overview.usersActive}
+                icon={CheckCircle2}
+              />
+              <StatCard
+                title="Inactive Users"
+                value={overview.usersInactive}
+                icon={XCircle}
+                iconClassName="bg-destructive/10 text-destructive"
+              />
+              <StatCard
+                title="Active Sessions"
+                value={overview.activeSessions}
+                icon={CheckCircle2}
+              />
+              <StatCard
+                title="Pending Appointments"
+                value={overview.appointmentsByStatus.pending ?? 0}
+                icon={FileClock}
+                iconClassName="bg-amber-500/10 text-amber-600"
+              />
+              <StatCard
+                title="Approved Appointments"
+                value={overview.appointmentsByStatus.approved ?? 0}
+                icon={CheckCircle2}
+              />
+              <StatCard
+                title="Lecturers w/ Availability"
+                value={overview.availability.lecturersWithAvailability}
+                icon={CalendarDays}
+              />
+              <StatCard
+                title="Unread Notifications"
+                value={overview.notifications.unread}
+                icon={FileClock}
+              />
+              <StatCard
+                title="Rate-Limit Keys"
+                value={overview.rateLimits.keys}
+                icon={FileClock}
+              />
+              <StatCard
+                title="Blocked Keys"
+                value={overview.rateLimits.blocked}
+                icon={XCircle}
+                iconClassName="bg-destructive/10 text-destructive"
+              />
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-muted-foreground">
+                    <th className="py-2 pr-4 font-medium">Table</th>
+                    <th className="py-2 pr-4 font-medium">Rows</th>
+                    <th className="py-2 font-medium">Purpose</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {TABLE_PURPOSES.map(([table, purpose]) => (
+                    <tr key={table} className="border-b last:border-0">
+                      <td className="py-2 pr-4 font-mono text-xs">{table}</td>
+                      <td className="py-2 pr-4 font-medium">
+                        {overview.tables[table] ?? "—"}
+                      </td>
+                      <td className="py-2 text-muted-foreground">{purpose}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Quick links */}      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {[
           { label: "Manage Users", href: "/admin/users", icon: Users, desc: "View and manage accounts" },
           { label: "View Appointments", href: "/admin/appointments", icon: CalendarDays, desc: "Track all consultations" },

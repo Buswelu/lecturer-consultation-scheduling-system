@@ -1,36 +1,71 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# LCSS — Lecturer Consultation Scheduling System
 
-## Getting Started
+Next.js App Router + TypeScript + Tailwind/shadcn/ui, backed exclusively by
+self-managed PostgreSQL (`Consultation_db`). Authentication is application-owned
+(Argon2id, opaque `lcss_session` cookies, PostgreSQL rate limiting).
 
-First, run the development server:
+## Prerequisites
+
+- Node.js 20+ and npm
+- PostgreSQL 16+ with a `Consultation_db` database (managed via pgAdmin)
+
+## Setup (local development)
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Copy `.env.example` to `.env.local` and fill in the **server-only** values
+(placeholders only — never commit real secrets):
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```env
+DATABASE_URL="postgresql://postgres:YOUR_PASSWORD@localhost:5432/Consultation_db"
+SESSION_SECRET="<64 hex chars from: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))">"
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Then initialize the database and start the app:
 
-## Learn More
+```bash
+npm run db:migrate   # apply pending migrations (tracked, idempotent)
+npm run db:seed      # reference data: departments + courses
+npm run db:seed:dev  # dev scenario data: assignments + availability
+npm run doctor       # readiness checks (env, secrets hygiene, DB, migrations)
+npm run dev          # http://localhost:3000
+```
 
-To learn more about Next.js, take a look at the following resources:
+Create local accounts (prints a one-time password — store it safely):
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+npm run db:provision -- admin admin@university.edu "System Admin"
+npm run db:provision -- student student@university.edu "Test Student"
+npm run db:provision -- lecturer lecturer@university.edu "Test Lecturer"
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Log in with the printed registration/staff/admin identifier (or email).
 
-## Deploy on Vercel
+## Verification
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+npm test            # full suite (real PostgreSQL)
+npx tsc --noEmit
+npm run build
+npm run lint
+npm run db:verify   # schema report + DB conflict-guard tests (rolled back)
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Documentation
+
+- `docs/DATABASE.md` — setup, migrations, seed, pgAdmin, backups/restore
+- `docs/AUTHENTICATION.md` — identifiers, sessions, rate limiting, provisioning
+- `docs/DATA-LAYER-MIGRATION.md` — Supabase → PostgreSQL service inventory
+- `docs/SUPABASE-ROLLBACK.md` — what was removed, what remains, and why
+- `docs/SECURITY.md` — security audit findings and boundaries
+- `docs/MIGRATION-SNAPSHOT.md`, `docs/POSTGRESQL-MIGRATION-PLAN.md` — history
+
+## Backups
+
+```bash
+pg_dump "$DATABASE_URL" -F c -f lcss-backup.dump   # back up (see docs/DATABASE.md)
+```
+
+Store backups outside the repo. Never commit backups, passwords, or secrets.

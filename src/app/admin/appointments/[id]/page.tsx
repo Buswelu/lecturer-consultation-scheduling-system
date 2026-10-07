@@ -12,27 +12,19 @@ import { Breadcrumbs } from "@/components/breadcrumbs";
 import { LoadingState } from "@/components/loading-state";
 import { ErrorState } from "@/components/error-state";
 import { getAppointmentById } from "@/lib/services/appointments";
-import { getUsers } from "@/lib/services/users";
-import { getCourseName } from "@/lib/services/lecturers";
 import { formatDate, formatTime, formatDateTime } from "@/lib/format";
 import type { Appointment } from "@/lib/types";
 
 export default function AdminAppointmentDetailPage() {
   const params = useParams<{ id: string }>();
   const [appointment, setAppointment] = React.useState<Appointment | null>(null);
-  const [names, setNames] = React.useState<Record<string, string>>({});
   const [loading, setLoading] = React.useState(true);
 
   React.useEffect(() => {
-    Promise.all([getAppointmentById(params.id), getUsers()]).then(([a, users]) => {
-      setAppointment(a);
-      const map: Record<string, string> = {};
-      users.forEach((u) => {
-        map[u.id] = u.fullName;
-      });
-      setNames(map);
-      setLoading(false);
-    });
+    getAppointmentById(params.id)
+      .then((a) => setAppointment(a))
+      .catch(() => setAppointment(null))
+      .finally(() => setLoading(false));
   }, [params.id]);
 
   if (loading) {
@@ -71,13 +63,13 @@ export default function AdminAppointmentDetailPage() {
         </Button>
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-2xl font-bold tracking-tight">
-            {getCourseName(appointment.courseId)}
+            {appointment.courseName ?? "Consultation"}
           </h1>
           <StatusBadge status={appointment.status} />
         </div>
         <p className="mt-1 text-sm text-muted-foreground">
-          {names[appointment.studentId] ?? "Student"} with{" "}
-          {names[appointment.lecturerId] ?? "Lecturer"}
+          {appointment.studentName ?? "Student"} with{" "}
+          {appointment.lecturerName ?? "Lecturer"}
         </p>
       </div>
 
@@ -93,21 +85,21 @@ export default function AdminAppointmentDetailPage() {
                   <User className="h-3.5 w-3.5" />
                   Student
                 </dt>
-                <dd className="mt-1 font-medium">{names[appointment.studentId] ?? "—"}</dd>
+                <dd className="mt-1 font-medium">{appointment.studentName ?? "—"}</dd>
               </div>
               <div>
                 <dt className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                   <User className="h-3.5 w-3.5" />
                   Lecturer
                 </dt>
-                <dd className="mt-1 font-medium">{names[appointment.lecturerId] ?? "—"}</dd>
+                <dd className="mt-1 font-medium">{appointment.lecturerName ?? "—"}</dd>
               </div>
               <div>
                 <dt className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                   <FileText className="h-3.5 w-3.5" />
                   Course
                 </dt>
-                <dd className="mt-1 font-medium">{getCourseName(appointment.courseId)}</dd>
+                <dd className="mt-1 font-medium">{appointment.courseName ?? "—"}</dd>
               </div>
               <div>
                 <dt className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">

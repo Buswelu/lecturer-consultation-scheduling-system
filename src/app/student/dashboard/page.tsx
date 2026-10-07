@@ -20,8 +20,7 @@ import { StatusBadge } from "@/components/appointments/appointment-status";
 import { getGreeting, formatDate, formatTime } from "@/lib/format";
 import { getAppointmentsByStudent } from "@/lib/services/appointments";
 import { getNotificationsForUser } from "@/lib/services/notifications";
-import { getCurrentProfile } from "@/lib/supabase/auth";
-import { getLecturerName, getCourseName } from "@/lib/services/lecturers";
+import { getPgCurrentUser } from "@/lib/auth/client";
 import { useStudentIdentity } from "@/hooks/useSessionIds";
 import { todayYMD } from "@/lib/scheduling/datetime";
 import { NotificationItem } from "@/components/notifications/notification-item";
@@ -37,14 +36,13 @@ export default function StudentDashboardPage() {
   const [profileName, setProfileName] = useState<string | null>(null);
 
   useEffect(() => {
-    // Real authenticated profile for the welcome message; falls back to
-    // the demo name when Supabase is unconfigured (mock preview mode).
-    getCurrentProfile()
-      .then((profile) => {
-        if (profile) setProfileName(profile.full_name);
+    // Real PostgreSQL-authenticated profile for the welcome message.
+    getPgCurrentUser()
+      .then((user) => {
+        if (user) setProfileName(user.fullName);
       })
       .catch(() => {
-        // Keep the fallback name.
+        // Keep the greeting without a name.
       });
     if (identityLoading || !studentId || !notifUserId) return;
     Promise.all([
@@ -88,7 +86,7 @@ export default function StudentDashboardPage() {
     <div className="space-y-8">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">
-          {getGreeting()}, {profileName ?? "John"}
+          {getGreeting()}{profileName ? `, ${profileName}` : ""}
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Here is an overview of your consultations.
@@ -137,10 +135,10 @@ export default function StudentDashboardPage() {
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <h3 className="text-lg font-semibold">
-                        {nextAppointment.lecturerName ?? getLecturerName(nextAppointment.lecturerId)}
+                        {nextAppointment.lecturerName ?? "Lecturer"}
                       </h3>
                       <p className="text-sm text-muted-foreground">
-                        {nextAppointment.courseName ?? getCourseName(nextAppointment.courseId)}
+                        {nextAppointment.courseName ?? "—"}
                       </p>
                     </div>
                     <StatusBadge status={nextAppointment.status} />

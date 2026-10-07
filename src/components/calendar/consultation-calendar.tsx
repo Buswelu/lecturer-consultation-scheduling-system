@@ -8,7 +8,6 @@ import interactionPlugin from "@fullcalendar/interaction";
 import listPlugin from "@fullcalendar/list";
 import type { EventClickArg } from "@fullcalendar/core";
 import type { Appointment, AppointmentStatus } from "@/lib/types";
-import { getLecturerName, getCourseName } from "@/lib/services/lecturers";
 
 const statusColors: Record<AppointmentStatus, string> = {
   pending: "#f59e0b",
@@ -38,7 +37,7 @@ export function ConsultationCalendar({
 }: ConsultationCalendarProps) {
   const events = appointments.map((appt) => ({
     id: appt.id,
-    title: `${appt.lecturerName ?? getLecturerName(appt.lecturerId)} - ${appt.courseName ?? getCourseName(appt.courseId)}`,
+    title: `${appt.lecturerName ?? "Lecturer"} - ${appt.courseName ?? "—"}`,
     start: toDateTime(appt.date, appt.startTime),
     end: toDateTime(appt.date, appt.endTime),
     backgroundColor: statusColors[appt.status],

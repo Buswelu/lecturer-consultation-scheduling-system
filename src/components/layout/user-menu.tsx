@@ -14,18 +14,19 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { signOut } from "@/lib/supabase/auth";
+import { pgLogout } from "@/lib/auth/client";
 
 interface UserMenuProps {
   name: string;
   email: string;
   role: string;
+  identifier?: string;
   photoUrl?: string;
   profileUrl: string;
   settingsUrl: string;
 }
 
-export function UserMenu({ name, email, role, photoUrl, profileUrl, settingsUrl }: UserMenuProps) {
+export function UserMenu({ name, email, role, identifier, photoUrl, profileUrl, settingsUrl }: UserMenuProps) {
   const router = useRouter();
   const [signingOut, setSigningOut] = useState(false);
 
@@ -33,11 +34,8 @@ export function UserMenu({ name, email, role, photoUrl, profileUrl, settingsUrl 
     e.preventDefault();
     if (signingOut) return;
     setSigningOut(true);
-    try {
-      await signOut();
-    } catch {
-      // Proceed to login even if sign-out fails (e.g. session already gone).
-    }
+    // Server invalidates the PostgreSQL session and clears the cookie.
+    await pgLogout();
     router.push("/login");
     router.refresh();
   };
@@ -53,6 +51,9 @@ export function UserMenu({ name, email, role, photoUrl, profileUrl, settingsUrl 
         <DropdownMenuLabel>
           <div className="flex flex-col space-y-1">
             <p className="text-sm font-semibold">{name}</p>
+            {identifier && (
+              <p className="text-xs font-medium text-muted-foreground">{identifier}</p>
+            )}
             <p className="text-xs font-normal text-muted-foreground">{email}</p>
             <p className="text-[10px] font-normal uppercase tracking-wide text-muted-foreground">
               {role}

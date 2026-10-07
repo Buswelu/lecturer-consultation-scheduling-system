@@ -1,12 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
 import { Menu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { NotificationDropdown } from "./notification-dropdown";
 import { UserMenu } from "./user-menu";
-import { getCurrentProfile } from "@/lib/supabase/auth";
+import { usePgCurrentUser } from "@/lib/auth/client";
 
 interface NavbarProps {
   role: "student" | "lecturer" | "admin";
@@ -16,8 +15,8 @@ interface NavbarProps {
 interface RealUser {
   name: string;
   email: string;
+  identifier: string;
   roleLabel: string;
-  photoUrl?: string;
   userId: string;
 }
 
@@ -29,46 +28,32 @@ function roleLabel(role: string): string {
 }
 
 export function Navbar({ role, onMenuClick }: NavbarProps) {
-  const [realUser, setRealUser] = useState<RealUser | null>(null);
+  const { user, loading } = usePgCurrentUser();
 
-  // Prefer the real authenticated profile; fall back to demo labels when
-  // Supabase is unconfigured or no session exists (mock preview mode).
-  useEffect(() => {
-    let cancelled = false;
-    getCurrentProfile()
-      .then((profile) => {
-        if (!profile || cancelled) return;
-        setRealUser({
-          name: profile.full_name,
-          email: profile.email ?? "",
-          roleLabel: roleLabel(profile.role),
-          photoUrl: profile.avatar_url ?? undefined,
-          userId: profile.id,
-        });
-      })
-      .catch(() => {
-        // Keep the fallback labels.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // Real PostgreSQL-authenticated user. While the session is being resolved,
+  // show a neutral placeholder (never another person's name).
+  const realUser: RealUser | null = user
+    ? {
+        name: user.fullName,
+        email: user.email,
+        identifier: user.username,
+        roleLabel: roleLabel(user.role),
+        userId: user.id,
+      }
+    : null;
 
-  const fallback = {
-    name: role === "student" ? "John Mensah" : role === "lecturer" ? "Dr. Sarah Smith" : "System Admin",
-    email: role === "student" ? "john.mensah@schoolemail.edu" : role === "lecturer" ? "sarah.smith@university.edu" : "admin@university.edu",
+  const display = realUser ?? {
+    name: loading ? "…" : "Account",
+    email: "",
     roleLabel: roleLabel(role),
   };
-
-  const user = realUser ?? fallback;
 
   const profileUrl = `/${role}/profile`;
   const settingsUrl = `/${role}/settings`;
   const notificationsUrl = `/${role}/notifications`;
-  // Notification data is still mock-backed (later phase); use the real
-  // profile id when known so no other user's items can leak through.
-  const userId = realUser?.userId
-    ?? (role === "student" ? "stud-1" : role === "lecturer" ? "lec-1" : "admin-1");
+  // Use the real profile id when known so no other user's notifications
+  // can leak through; otherwise the dropdown stays empty.
+  const userId = realUser?.userId ?? "";
 
   return (
     <header className="flex h-16 items-center justify-between border-b px-4 lg:px-6">
@@ -89,10 +74,10 @@ export function Navbar({ role, onMenuClick }: NavbarProps) {
       <div className="flex items-center gap-2">
         <NotificationDropdown userId={userId} notificationsUrl={notificationsUrl} />
         <UserMenu
-          name={user.name}
-          email={user.email}
-          role={user.roleLabel}
-          photoUrl={realUser?.photoUrl}
+          name={display.name}
+          email={display.email}
+          role={display.roleLabel}
+          identifier={realUser?.identifier}
           profileUrl={profileUrl}
           settingsUrl={settingsUrl}
         />

@@ -10,11 +10,10 @@ import { AuthLayout } from "@/components/auth/auth-layout";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { isSupabaseConfigured } from "@/lib/supabase/client";
-import { sendPasswordResetEmail } from "@/lib/supabase/auth";
+import { PgAuthClientError, pgRequestPasswordReset } from "@/lib/auth/client";
 
 const forgotSchema = z.object({
-  email: z.string().email("Please enter a valid email address"),
+  username: z.string().min(3, "Enter your registration number or email"),
 });
 
 type ForgotValues = z.infer<typeof forgotSchema>;
@@ -30,27 +29,29 @@ export default function ForgotPasswordPage() {
     formState: { errors },
   } = useForm<ForgotValues>({
     resolver: zodResolver(forgotSchema),
-    defaultValues: { email: "" },
+    defaultValues: { username: "" },
   });
 
   const onSubmit = async (values: ForgotValues) => {
+    if (loading) return;
     setLoading(true);
     setError(null);
     try {
-      if (isSupabaseConfigured()) {
-        // Generic outcome either way — never reveals whether the email exists.
-        await sendPasswordResetEmail(
-          values.email,
-          `${window.location.origin}/auth/confirm?next=/reset-password`,
-        );
-      } else {
-        // Legacy mock preview (no Supabase configured).
-        await new Promise((r) => setTimeout(r, 800));
-      }
+      // Server-side PostgreSQL recovery: accepts a registration number
+      // or an email; the server resolves the account's recovery email.
+      // Independent rate limiter runs first; the response is generic
+      // either way — never reveals account existence.
+      await pgRequestPasswordReset(values.username);
+      // Any other status (including errors) → generic success screen so
+      // account existence is never revealed.
       setLoading(false);
       setSubmitted(true);
-    } catch {
+    } catch (err) {
       setLoading(false);
+      if (err instanceof PgAuthClientError && err.status === 429) {
+        setError("Too many requests. Please try again later.");
+        return;
+      }
       // Still show the generic success screen: do not reveal email existence.
       setSubmitted(true);
     }
@@ -60,7 +61,7 @@ export default function ForgotPasswordPage() {
     return (
       <AuthLayout
         title="Check your email"
-        description="We&apos;ve sent you a password reset link"
+        description="We&apos;ve sent password reset instructions"
       >
         <div className="flex flex-col items-center text-center">
           <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10">
@@ -68,8 +69,8 @@ export default function ForgotPasswordPage() {
           </div>
           <h2 className="mt-4 font-semibold">Reset link sent</h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            If an account exists for this email, you will receive a link to reset your
-            password shortly.
+            If an account matches, instructions were sent to its recovery
+            email shortly.
           </p>
           <div className="mt-6 flex items-center gap-1 text-sm text-primary">
             <CheckCircle2 className="h-4 w-4" />
@@ -86,7 +87,7 @@ export default function ForgotPasswordPage() {
   return (
     <AuthLayout
       title="Forgot your password?"
-      description="Enter your email and we&apos;ll send you a reset link"
+      description="Enter your registration number or email"
       footer={
         <>
           Remembered it?{" "}
@@ -98,16 +99,16 @@ export default function ForgotPasswordPage() {
     >
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
         <div className="space-y-2">
-          <Label htmlFor="email">Email</Label>
+          <Label htmlFor="username">Registration Number or Email</Label>
           <Input
-            id="email"
-            type="email"
-            placeholder="you@university.edu"
-            autoComplete="email"
-            {...register("email")}
+            id="username"
+            type="text"
+            placeholder="STU-2026-0001 or you@university.edu"
+            autoComplete="username"
+            {...register("username")}
           />
-          {errors.email && (
-            <p className="text-sm text-destructive">{errors.email.message}</p>
+          {errors.username && (
+            <p className="text-sm text-destructive">{errors.username.message}</p>
           )}
         </div>
 

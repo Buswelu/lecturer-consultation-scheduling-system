@@ -6,7 +6,6 @@ import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { getDepartmentName, getCourseName } from "@/lib/services/lecturers";
 import type { LecturerProfile } from "@/lib/types";
 
 interface LecturerCardProps {
@@ -18,8 +17,9 @@ interface LecturerCardProps {
 }
 
 export function LecturerCard({ lecturer, available = true, departmentName, courseNames }: LecturerCardProps) {
-  const resolvedDept = departmentName ?? getDepartmentName(lecturer.departmentId);
-  const resolvedCourses = courseNames ?? lecturer.courses.slice(0, 3).map(getCourseName);
+  const resolvedDept = departmentName ?? lecturer.departmentName ?? "—";
+  const resolvedCourses =
+    courseNames ?? lecturer.courseNames ?? lecturer.courses.slice(0, 3);
 
   return (
     <Card className="overflow-hidden">

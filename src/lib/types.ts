@@ -74,6 +74,9 @@ export interface LecturerProfile extends User {
   bio: string;
   courses: string[];
   consultationTypes: ConsultationType[];
+  /** Embedded directory display data (populated by list/detail reads). */
+  departmentName?: string;
+  courseNames?: string[];
 }
 
 export interface Appointment {

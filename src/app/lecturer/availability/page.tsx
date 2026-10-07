@@ -48,8 +48,8 @@ import {
   getDayLabel,
   dayOrder,
 } from "@/lib/services/availability";
-import { getCurrentLecturer } from "@/lib/supabase/auth";
 import { formatTime } from "@/lib/format";
+import { useLecturerIdentity } from "@/hooks/useSessionIds";
 import { formatDateInTZ, formatTimeInTZ } from "@/lib/scheduling/datetime";
 import type { AvailabilityException, AvailabilityRule, DayOfWeek } from "@/lib/types";
 
@@ -88,6 +88,7 @@ const exceptionSchema = z
 type ExceptionValues = z.infer<typeof exceptionSchema>;
 
 export default function LecturerAvailabilityPage() {
+  const { lecturerId: sessionLecturerId, loading: identityLoading } = useLecturerIdentity();
   const [lecturerId, setLecturerId] = React.useState<string | null>(null);
   const [rules, setRules] = React.useState<AvailabilityRule[]>([]);
   const [exceptions, setExceptions] = React.useState<AvailabilityException[]>([]);
@@ -139,13 +140,13 @@ export default function LecturerAvailabilityPage() {
     },
   });
 
-  // Ownership: the lecturer id comes from the session when signed in,
-  // otherwise the mock demo id (RLS still enforces ownership server-side).
+  // Ownership: the lecturer id comes from the PostgreSQL session when
+  // signed in, otherwise the mock demo id (service layer still enforces
+  // ownership server-side).
   React.useEffect(() => {
-    getCurrentLecturer()
-      .then((current) => setLecturerId(current?.lecturer.id ?? MOCK_LECTURER_ID))
-      .catch(() => setLecturerId(MOCK_LECTURER_ID));
-  }, []);
+    if (identityLoading) return;
+    setLecturerId(sessionLecturerId ?? MOCK_LECTURER_ID);
+  }, [sessionLecturerId, identityLoading]);
 
   const load = React.useCallback(async () => {
     if (!lecturerId) return;

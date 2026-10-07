@@ -14,7 +14,6 @@ import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
 import { ConfirmationDialog } from "@/components/confirmation-dialog";
 import { cancelAppointment, getAppointmentsByStudent } from "@/lib/services/appointments";
-import { getLecturerName, getCourseName } from "@/lib/services/lecturers";
 import { useStudentIdentity } from "@/hooks/useSessionIds";
 import { todayYMD } from "@/lib/scheduling/datetime";
 import { formatDate, formatTime } from "@/lib/format";
@@ -191,10 +190,10 @@ export default function StudentAppointmentsPage() {
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <h3 className="truncate font-semibold">
-                              {appt.lecturerName ?? getLecturerName(appt.lecturerId)}
+                              {appt.lecturerName ?? "Lecturer"}
                             </h3>
                             <p className="mt-1 text-sm text-muted-foreground">
-                              {appt.courseName ?? getCourseName(appt.courseId)}
+                              {appt.courseName ?? "—"}
                             </p>
                           </div>
                           <div className="flex shrink-0 flex-col items-end gap-1">

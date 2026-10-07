@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { Suspense, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -10,8 +11,7 @@ import { AuthLayout } from "@/components/auth/auth-layout";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { PasswordInput } from "@/components/auth/password-input";
-import { getSupabase } from "@/lib/supabase/client";
-import { updatePassword } from "@/lib/supabase/auth";
+import { PgAuthClientError, pgResetPassword } from "@/lib/auth/client";
 
 const resetSchema = z
   .object({
@@ -26,14 +26,26 @@ const resetSchema = z
 type ResetValues = z.infer<typeof resetSchema>;
 
 /**
- * /reset-password — target of Supabase recovery links (via /auth/confirm).
- * Requires the recovery session; otherwise shows an expired-link message.
+ * /reset-password — target of PostgreSQL recovery links (`?token=…`).
+ * Without a token shows the expired-link message; the token itself is only
+ * ever sent to POST /api/pg-auth/reset-password, never stored client-side.
  */
 export default function ResetPasswordPage() {
-  // The browser client auto-detects the recovery session from the URL
-  // (code exchange via /auth/confirm, or legacy hash tokens).
-  const [checking, setChecking] = useState(() => getSupabase() !== null);
-  const [hasSession, setHasSession] = useState(false);
+  return (
+    <Suspense
+      fallback={
+        <p className="text-center text-sm text-muted-foreground">Loading...</p>
+      }
+    >
+      <ResetPasswordForm />
+    </Suspense>
+  );
+}
+
+function ResetPasswordForm() {
+  const searchParams = useSearchParams();
+  const token = searchParams.get("token");
+  const hasToken = Boolean(token);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
@@ -47,38 +59,21 @@ export default function ResetPasswordPage() {
     defaultValues: { password: "", confirmPassword: "" },
   });
 
-  // The browser client auto-detects the recovery session from the URL
-  // (code exchange via /auth/confirm, or legacy hash tokens).
-  useEffect(() => {
-    const supabase = getSupabase();
-    if (!supabase) return;
-    let cancelled = false;
-    supabase.auth
-      .getSession()
-      .then(({ data }) => {
-        if (!cancelled) {
-          setHasSession(Boolean(data.session?.user));
-          setChecking(false);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setChecking(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const onSubmit = async (values: ResetValues) => {
+    if (!token) return;
     setLoading(true);
     setError(null);
     try {
-      await updatePassword(values.password);
+      await pgResetPassword({ token, password: values.password });
       setLoading(false);
       setDone(true);
-    } catch {
+    } catch (err) {
       setLoading(false);
-      setError("We couldn't update your password. The link may have expired.");
+      setError(
+        err instanceof PgAuthClientError
+          ? err.message
+          : "We couldn't update your password. The link may have expired.",
+      );
     }
   };
 
@@ -116,11 +111,7 @@ export default function ResetPasswordPage() {
         </>
       }
     >
-      {checking ? (
-        <p className="text-center text-sm text-muted-foreground">
-          Verifying your reset link...
-        </p>
-      ) : !hasSession ? (
+      {!hasToken ? (
         <div className="space-y-4 text-center">
           <p className="text-sm text-muted-foreground">
             This password reset link is invalid or has expired. Please request a

@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/page-header";
 import { SearchBar } from "@/components/search-bar";
 import { FilterPanel, FilterField } from "@/components/filter-panel";
 import { DataTable, type Column } from "@/components/data-table";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar } from "@/components/ui/avatar";
 import {
@@ -14,7 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { getUsers, getDepartments } from "@/lib/services/users";
+import { getUsers, getDepartments, setUserActiveStatus } from "@/lib/services/users";
 import { formatDate } from "@/lib/format";
 import type { UserWithDepartment } from "@/lib/services/users";
 import type { Department } from "@/lib/types";
@@ -31,6 +32,8 @@ export function AdminRoleListPage({ role, title, description }: AdminRoleListPag
   const [search, setSearch] = React.useState("");
   const [deptFilter, setDeptFilter] = React.useState("all");
   const [statusFilter, setStatusFilter] = React.useState("all");
+  const [actionError, setActionError] = React.useState<string | null>(null);
+  const [actingId, setActingId] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     Promise.all([getUsers({ role }), getDepartments()]).then(([u, d]) => {
@@ -44,13 +47,32 @@ export function AdminRoleListPage({ role, title, description }: AdminRoleListPag
     if (search) {
       const q = search.toLowerCase();
       result = result.filter(
-        (u) => u.fullName.toLowerCase().includes(q) || u.email.toLowerCase().includes(q),
+        (u) =>
+          u.fullName.toLowerCase().includes(q) ||
+          u.email.toLowerCase().includes(q) ||
+          (u as unknown as { username?: string }).username?.toLowerCase().includes(q),
       );
     }
     if (deptFilter !== "all") result = result.filter((u) => u.departmentId === deptFilter);
     if (statusFilter !== "all") result = result.filter((u) => u.status === statusFilter);
     return result;
   }, [users, search, deptFilter, statusFilter]);
+
+  const handleToggleActive = async (user: UserWithDepartment) => {
+    const userId =
+      (user as unknown as { userId?: string }).userId ?? user.id;
+    setActionError(null);
+    setActingId(user.id);
+    try {
+      await setUserActiveStatus(userId, user.status !== "active");
+      const status = user.status !== "active" ? "active" : "inactive";
+      setUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, status } : u)));
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Could not update the account.");
+    } finally {
+      setActingId(null);
+    }
+  };
 
   const columns: Column<UserWithDepartment>[] = [
     {
@@ -110,6 +132,21 @@ export function AdminRoleListPage({ role, title, description }: AdminRoleListPag
       sortValue: (u) => u.createdAt,
       cell: (u) => <span className="text-sm text-muted-foreground">{formatDate(u.createdAt)}</span>,
     },
+    {
+      key: "actions",
+      header: "Actions",
+      sortValue: () => "",
+      cell: (u) => (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={actingId === u.id}
+          onClick={() => handleToggleActive(u)}
+        >
+          {u.status === "active" ? "Deactivate" : "Activate"}
+        </Button>
+      ),
+    },
   ];
 
   const handleReset = () => {
@@ -124,7 +161,7 @@ export function AdminRoleListPage({ role, title, description }: AdminRoleListPag
 
       <FilterPanel onReset={handleReset}>
         <FilterField label="Search" className="min-w-[200px] flex-1">
-          <SearchBar placeholder="Search by name or email..." value={search} onChange={setSearch} />
+          <SearchBar placeholder="Search by name, email, or ID..." value={search} onChange={setSearch} />
         </FilterField>
         <FilterField label="Department">
           <Select value={deptFilter} onValueChange={setDeptFilter}>
@@ -155,6 +192,11 @@ export function AdminRoleListPage({ role, title, description }: AdminRoleListPag
       </FilterPanel>
 
       <DataTable columns={columns} data={filtered} getRowId={(u) => u.id} pageSize={10} />
+      {actionError && (
+        <p className="mt-3 text-sm text-destructive" role="alert">
+          {actionError}
+        </p>
+      )}
     </div>
   );
 }

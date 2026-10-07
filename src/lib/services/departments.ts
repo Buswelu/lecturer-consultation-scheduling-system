@@ -1,33 +1,16 @@
-import { getSupabase, isSupabaseConfigured } from "@/lib/supabase/client";
-import { isUuid } from "@/lib/scheduling/datetime";
-import { mapDepartment } from "@/lib/supabase/mappers";
-import { departments } from "@/lib/mock-data";
+/**
+ * LCSS — departments service (PostgreSQL-backed fetch client).
+ *
+ * Same contracts as before; data comes from `/api/departments`
+ * (authenticated, server-authorized) instead of Supabase.
+ */
+import { apiGet, apiSend } from "./http";
 import type { Department } from "@/lib/types";
-
-const IS_MOCK = false;
-
-function isLive(): boolean {
-  return !IS_MOCK && isSupabaseConfigured();
-}
-
-function isLiveId(id: string): boolean {
-  return isLive() && isUuid(id);
-}
 
 /** All departments (reference data). */
 export async function getDepartments(): Promise<Department[]> {
-  if (isLive()) {
-    const supabase = getSupabase();
-    if (supabase) {
-      const { data, error } = await supabase
-        .from("departments")
-        .select("*")
-        .order("name");
-      if (error) throw error;
-      return data.map(mapDepartment);
-    }
-  }
-  return departments;
+  const data = await apiGet<{ departments: Department[] }>("/api/departments");
+  return data.departments;
 }
 
 /** Departments flagged active (for dropdowns / filters). */
@@ -38,17 +21,36 @@ export async function getActiveDepartments(): Promise<Department[]> {
 
 /** Single department by id, or null. */
 export async function getDepartmentById(id: string): Promise<Department | null> {
-  if (isLiveId(id)) {
-    const supabase = getSupabase();
-    if (supabase) {
-      const { data, error } = await supabase
-        .from("departments")
-        .select("*")
-        .eq("id", id)
-        .single();
-      if (error) return null;
-      return mapDepartment(data);
-    }
-  }
-  return departments.find((d) => d.id === id) ?? null;
+  const data = await apiGet<{ department: Department }>(
+    `/api/departments/${encodeURIComponent(id)}`,
+  ).catch(() => null);
+  return data?.department ?? null;
+}
+
+/** Create a department (admins only). */
+export async function createDepartment(input: {
+  name: string;
+  code?: string;
+  description?: string;
+}): Promise<Department> {
+  const data = await apiSend<{ department: Department }>("/api/departments", "POST", input);
+  return data.department;
+}
+
+/** Update a department (admins only). */
+export async function updateDepartment(
+  id: string,
+  input: { name?: string; code?: string | null; description?: string | null; isActive?: boolean },
+): Promise<Department> {
+  const data = await apiSend<{ department: Department }>(
+    `/api/departments/${encodeURIComponent(id)}`,
+    "PATCH",
+    input,
+  );
+  return data.department;
+}
+
+/** Delete a department (admins only). */
+export async function deleteDepartment(id: string): Promise<void> {
+  await apiSend(`/api/departments/${encodeURIComponent(id)}`, "DELETE");
 }

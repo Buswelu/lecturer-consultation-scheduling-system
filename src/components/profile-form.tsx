@@ -12,8 +12,9 @@ import { Label } from "@/components/ui/label";
 import { Avatar } from "@/components/ui/avatar";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { getCurrentUser } from "@/lib/services/users";
-import { departments } from "@/lib/mock-data";
+import { usePgCurrentUser } from "@/lib/auth/client";
+import { getDepartments } from "@/lib/services/departments";
+import type { Department } from "@/lib/types";
 import {
   Select,
   SelectContent,
@@ -39,10 +40,20 @@ interface ProfileFormProps {
 }
 
 export function ProfileForm({ role }: ProfileFormProps) {
-  const user = getCurrentUser(role);
+  // PostgreSQL identity (name/email/identifier); the remaining fields are
+  // local-only until profile editing is backed by an API.
+  const { user: pgUser } = usePgCurrentUser();
+  const displayName = pgUser?.fullName ?? "";
   const [saving, setSaving] = React.useState(false);
   const [saved, setSaved] = React.useState(false);
-  const [photo, setPhoto] = React.useState<string | null>(user.photoUrl ?? null);
+  const [photo, setPhoto] = React.useState<string | null>(null);
+  const [departments, setDepartments] = React.useState<Department[]>([]);
+
+  React.useEffect(() => {
+    getDepartments()
+      .then((deps) => setDepartments(deps.filter((d) => d.status === "active")))
+      .catch(() => undefined);
+  }, []);
 
   const isStudent = role === "student";
 
@@ -55,16 +66,16 @@ export function ProfileForm({ role }: ProfileFormProps) {
   } = useForm<ProfileValues>({
     resolver: zodResolver(profileSchema),
     defaultValues: {
-      fullName: user.fullName,
-      phone: user.phone ?? "",
-      departmentId: user.departmentId ?? "",
-      programme: isStudent && "programme" in user ? user.programme ?? "" : undefined,
-      office: !isStudent && "office" in user ? user.office ?? "" : undefined,
-      bio: !isStudent && "bio" in user ? user.bio ?? "" : undefined,
+      fullName: displayName,
+      phone: "",
+      departmentId: "",
+      programme: undefined,
+      office: undefined,
+      bio: undefined,
     },
   });
 
-  const activeDepartments = departments.filter((d) => d.status === "active");
+  const activeDepartments = departments;
 
   const onSubmit = async () => {
     setSaving(true);
@@ -91,7 +102,7 @@ export function ProfileForm({ role }: ProfileFormProps) {
           <CardDescription>Update your profile picture</CardDescription>
         </CardHeader>
         <CardContent className="flex items-center gap-4">
-          <Avatar src={photo ?? undefined} alt={user.fullName} fallback={user.fullName} size="lg" />
+          <Avatar src={photo ?? undefined} alt={displayName} fallback={displayName} size="lg" />
           <div>
             <label
               htmlFor="photo"
@@ -129,8 +140,18 @@ export function ProfileForm({ role }: ProfileFormProps) {
           {isStudent && (
             <div className="space-y-2">
               <Label>Email</Label>
-              <Input defaultValue={user.email} disabled />
+              <Input defaultValue={pgUser?.email ?? ""} disabled />
               <p className="text-xs text-muted-foreground">Email changes require verification.</p>
+            </div>
+          )}
+
+          {pgUser && (
+            <div className="space-y-2">
+              <Label>{role === "student" ? "Registration Number" : role === "lecturer" ? "Staff Number" : "Admin Identifier"}</Label>
+              <Input defaultValue={pgUser.username} disabled />
+              <p className="text-xs text-muted-foreground">
+                Assigned by the institution. Contact an administrator to change it.
+              </p>
             </div>
           )}
 

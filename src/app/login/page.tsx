@@ -14,35 +14,23 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PasswordInput } from "@/components/auth/password-input";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { isSupabaseConfigured } from "@/lib/supabase/client";
-import {
   dashboardPathForRole,
-  ensureUserProfile,
-  getCurrentProfile,
-  getSessionUserId,
   isPathForRole,
   isSafeNextPath,
-  mapSignInError,
-  signIn,
-} from "@/lib/supabase/auth";
-import type { DbRole } from "@/lib/supabase/database.types";
-import type { UserRole } from "@/lib/types";
+} from "@/lib/auth/routes";
+import type { AuthRole } from "@/lib/auth/routes";
+import { PgAuthClientError, getPgCurrentUser, pgLogin } from "@/lib/auth/client";
+import { parseIdentifier } from "@/lib/auth/identifiers";
 
 const loginSchema = z.object({
-  email: z.string().email("Please enter a valid email address"),
+  username: z.string().min(3, "Enter your registration number or email"),
   password: z.string().min(6, "Password must be at least 6 characters"),
   remember: z.boolean().optional(),
 });
 
 type LoginValues = z.infer<typeof loginSchema>;
 
-function resolveTarget(role: DbRole, next: string | null): string {
+function resolveTarget(role: AuthRole, next: string | null): string {
   if (next && isSafeNextPath(next) && isPathForRole(next, role)) {
     return next;
   }
@@ -55,7 +43,6 @@ function LoginForm() {
   const next = searchParams.get("next");
   const justConfirmed = searchParams.get("confirmed") === "1";
   const urlError = searchParams.get("error");
-  const [configured] = useState(() => isSupabaseConfigured());
   const [error, setError] = useState<string | null>(
     urlError === "expired"
       ? "That link has expired. Please request a new one."
@@ -64,6 +51,21 @@ function LoginForm() {
         : null,
   );
   const [loading, setLoading] = useState(false);
+  // Seconds until a rate-limited login may be retried (server-provided,
+  // display-only — enforcement is server-side).
+  const [retryAfter, setRetryAfter] = useState<number | null>(null);
+  // Primary path is identifier login; email is the backup mechanism.
+  const [useEmail, setUseEmail] = useState(false);
+
+  // Countdown ticker for the rate-limit message.
+  useEffect(() => {
+    if (retryAfter === null || retryAfter <= 0) return;
+    const timer = setTimeout(
+      () => setRetryAfter((v) => (v !== null && v > 0 ? v - 1 : v)),
+      1000,
+    );
+    return () => clearTimeout(timer);
+  }, [retryAfter]);
 
   const {
     register,
@@ -74,22 +76,23 @@ function LoginForm() {
   } = useForm<LoginValues>({
     resolver: zodResolver(loginSchema),
     defaultValues: {
-      email: "",
+      username: "",
       password: "",
       remember: false,
     },
   });
+  const usernameValue = watch("username") ?? "";
+  const identifierCheck = useEmail ? null : parseIdentifier(usernameValue);
 
   // Already signed in → bounce to the role dashboard (or safe `next`).
+  // Runs for every visitor; redirects ONLY on a positively confirmed
+  // session (never on loading/anonymous states).
   useEffect(() => {
-    if (!configured) return;
     let cancelled = false;
-    getSessionUserId()
-      .then(async (id) => {
-        if (!id || cancelled) return;
-        const profile = await getCurrentProfile();
-        if (!profile || cancelled) return;
-        router.replace(resolveTarget(profile.role, next));
+    getPgCurrentUser()
+      .then((user) => {
+        if (!user || cancelled) return;
+        router.replace(resolveTarget(user.role, next));
       })
       .catch(() => {
         // No usable session — stay on the login form.
@@ -97,44 +100,40 @@ function LoginForm() {
     return () => {
       cancelled = true;
     };
-  }, [configured, router, next]);
+  }, [router, next]);
 
   const onSubmit = async (values: LoginValues) => {
+    // Prevent repeated rapid submissions (UX only — the server enforces).
+    if (loading) return;
     setLoading(true);
     setError(null);
-
-    if (!configured) {
-      // Legacy mock preview (no Supabase configured): route by email hint.
-      const demoEmail = values.email.toLowerCase();
-      await new Promise((r) => setTimeout(r, 800));
-      if (demoEmail.includes("sarah") || demoEmail.includes("lec")) {
-        router.push("/lecturer/dashboard");
-        return;
-      }
-      if (demoEmail.includes("admin")) {
-        router.push("/admin/dashboard");
-        return;
-      }
-      router.push("/student/dashboard");
-      return;
-    }
+    setRetryAfter(null);
 
     try {
-      const session = await signIn({
-        email: values.email,
+      // Server-side PostgreSQL login: rate limiting runs BEFORE password
+      // verification. Generic messages only — the server never reveals
+      // account existence. The server determines the real role; the client
+      // only navigates.
+      const { role } = await pgLogin({
+        identifier: values.username,
         password: values.password,
       });
-      const profile = await ensureUserProfile({
-        userId: session.userId,
-        email: session.email,
-        fullName: session.fullName,
-        role: session.role,
-      });
-      router.push(resolveTarget(profile.role, next));
+      router.push(resolveTarget(role, next));
       router.refresh();
-    } catch (e) {
+    } catch (err) {
       setLoading(false);
-      setError(mapSignInError(e instanceof Error ? e.message : ""));
+      if (err instanceof PgAuthClientError && err.status === 429) {
+        setError(err.message);
+        if (typeof err.retryAfterSeconds === "number") {
+          setRetryAfter(err.retryAfterSeconds);
+        }
+        return;
+      }
+      setError(
+        err instanceof PgAuthClientError
+          ? err.message
+          : "We couldn't process your request right now.",
+      );
     }
   };
 
@@ -148,16 +147,40 @@ function LoginForm() {
       )}
 
       <div className="space-y-2">
-        <Label htmlFor="email">Email</Label>
+        <div className="flex items-center justify-between">
+          <Label htmlFor="username">
+            {useEmail ? "Email" : "Registration Number / Staff Number"}
+          </Label>
+          <button
+            type="button"
+            className="text-xs font-medium text-primary hover:underline"
+            onClick={() => {
+              setUseEmail((v) => !v);
+              setError(null);
+            }}
+          >
+            {useEmail ? "Use registration number instead" : "Use email instead"}
+          </button>
+        </div>
         <Input
-          id="email"
-          type="email"
-          placeholder="you@university.edu"
-          autoComplete="email"
-          {...register("email")}
+          id="username"
+          type="text"
+          placeholder={useEmail ? "you@university.edu" : "STU-2026-0001"}
+          autoComplete="username"
+          {...register("username")}
         />
-        {errors.email && (
-          <p className="text-sm text-destructive">{errors.email.message}</p>
+        {errors.username && (
+          <p className="text-sm text-destructive">{errors.username.message}</p>
+        )}
+        {!useEmail && usernameValue.length > 0 && (
+          <p
+            className={`text-xs ${identifierCheck?.valid ? "text-green-600" : "text-destructive"}`}
+            role="status"
+          >
+            {identifierCheck?.valid
+              ? `✓ Valid ${identifierCheck.category} format`
+              : "✕ Expected STU-YYYY-NNNN, LEC-YYYY-NNNN or ADM-NNNN"}
+          </p>
         )}
       </div>
 
@@ -194,36 +217,20 @@ function LoginForm() {
       </div>
 
       {error && (
-        <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <div
+          role="alert"
+          className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive"
+        >
           {error}
+          {retryAfter !== null && retryAfter > 0 && (
+            <span> Try again in {retryAfter}s.</span>
+          )}
         </div>
       )}
 
       <Button type="submit" className="w-full" disabled={loading}>
         {loading ? "Signing in..." : "Sign in"}
       </Button>
-
-      {!configured && (
-        <div className="pt-2">
-          <p className="mb-2 text-center text-xs text-muted-foreground">
-            Demo: Select a role to preview the interface
-          </p>
-          <Select onValueChange={(r: UserRole) => {
-            if (r === "student") router.push("/student/dashboard");
-            if (r === "lecturer") router.push("/lecturer/dashboard");
-            if (r === "admin") router.push("/admin/dashboard");
-          }}>
-            <SelectTrigger className="w-full">
-              <SelectValue placeholder="Demo login as..." />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="student">Student (John Mensah)</SelectItem>
-              <SelectItem value="lecturer">Lecturer (Dr. Sarah Smith)</SelectItem>
-              <SelectItem value="admin">Administrator</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      )}
     </form>
   );
 }

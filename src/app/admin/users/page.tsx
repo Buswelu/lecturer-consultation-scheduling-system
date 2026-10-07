@@ -39,7 +39,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ConfirmationDialog } from "@/components/confirmation-dialog";
-import { getUsers, getDepartments } from "@/lib/services/users";
+import { LoadingState } from "@/components/loading-state";
+import { getUsersPage, getDepartments, setUserActiveStatus } from "@/lib/services/users";
 import { formatDate } from "@/lib/format";
 import type {
   UserWithDepartment,
@@ -70,48 +71,83 @@ export default function AdminUsersPage() {
   const [roleFilter, setRoleFilter] = React.useState("all");
   const [deptFilter, setDeptFilter] = React.useState("all");
   const [statusFilter, setStatusFilter] = React.useState("all");
+  const [page, setPage] = React.useState(1);
+  const [total, setTotal] = React.useState(0);
+  const [loading, setLoading] = React.useState(true);
   const [viewUser, setViewUser] = React.useState<UserWithDepartment | null>(null);
   const [confirmAction, setConfirmAction] = React.useState<{
     user: UserWithDepartment;
     type: "deactivate" | "activate" | "delete";
   } | null>(null);
+  const [actionError, setActionError] = React.useState<string | null>(null);
+
+  const PAGE_SIZE = 20;
+
+  // Debounced search so typing doesn't fan out requests.
+  const [debouncedSearch, setDebouncedSearch] = React.useState(search);
+  React.useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 350);
+    return () => clearTimeout(timer);
+  }, [search]);
 
   React.useEffect(() => {
-    Promise.all([getUsers(), getDepartments()]).then(([u, d]) => {
-      setUsers(u);
-      setDepartments(d);
-    });
+    getDepartments().then((d) => setDepartments(d)).catch(() => undefined);
   }, []);
 
-  const filtered = React.useMemo(() => {
-    let result = users;
-    if (search) {
-      const q = search.toLowerCase();
-      result = result.filter(
-        (u) =>
-          u.fullName.toLowerCase().includes(q) ||
-          u.email.toLowerCase().includes(q),
-      );
-    }
-    if (roleFilter !== "all") result = result.filter((u) => u.role === roleFilter);
-    if (deptFilter !== "all") result = result.filter((u) => u.departmentId === deptFilter);
-    if (statusFilter !== "all") result = result.filter((u) => u.status === statusFilter);
-    return result;
-  }, [users, search, roleFilter, deptFilter, statusFilter]);
+  // Server-driven directory: search/filters/pagination run in PostgreSQL.
+  React.useEffect(() => {
+    let cancelled = false;
+    getUsersPage(
+      {
+        search: debouncedSearch || undefined,
+        role: roleFilter === "all" ? undefined : (roleFilter as "student" | "lecturer" | "admin"),
+        departmentId: deptFilter === "all" ? undefined : deptFilter,
+        status: statusFilter === "all" ? undefined : statusFilter,
+      },
+      page,
+      PAGE_SIZE,
+    )
+      .then((result) => {
+        if (cancelled) return;
+        setUsers(result.items);
+        setTotal(result.total);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedSearch, roleFilter, deptFilter, statusFilter, page]);
 
-  const handleConfirm = () => {
+  // Reset to the first page whenever the query changes.
+  const updateFilter = (setter: (v: string) => void) => (v: string) => {
+    setLoading(true);
+    setPage(1);
+    setter(v);
+  };
+
+  const filtered = users;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  const handleConfirm = async () => {
     if (!confirmAction) return;
     const { user, type } = confirmAction;
+    setActionError(null);
     if (type === "delete") {
+      // Local-only: auth identities are never hard-deleted from the UI.
       setUsers((prev) => prev.filter((u) => u.id !== user.id));
-    } else if (type === "deactivate") {
-      setUsers((prev) =>
-        prev.map((u) => (u.id === user.id ? { ...u, status: "inactive" } : u)),
-      );
     } else {
-      setUsers((prev) =>
-        prev.map((u) => (u.id === user.id ? { ...u, status: "active" } : u)),
-      );
+      const userId = (user as UserWithDepartment & { userId?: string }).userId ?? user.id;
+      try {
+        await setUserActiveStatus(userId, type === "activate");
+        const status = type === "activate" ? "active" : "inactive";
+        setUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, status } : u)));
+      } catch (e) {
+        setActionError(e instanceof Error ? e.message : "Could not update the account.");
+        return;
+      }
     }
     setConfirmAction(null);
   };
@@ -208,6 +244,7 @@ export default function AdminUsersPage() {
     setRoleFilter("all");
     setDeptFilter("all");
     setStatusFilter("all");
+    setPage(1);
   };
 
   return (
@@ -225,10 +262,18 @@ export default function AdminUsersPage() {
 
       <FilterPanel onReset={handleReset}>
         <FilterField label="Search" className="min-w-[200px] flex-1">
-          <SearchBar placeholder="Search by name or email..." value={search} onChange={setSearch} />
+          <SearchBar
+            placeholder="Search by name, email, or ID..."
+            value={search}
+            onChange={(v) => {
+              setLoading(true);
+              setPage(1);
+              setSearch(v);
+            }}
+          />
         </FilterField>
         <FilterField label="Role">
-          <Select value={roleFilter} onValueChange={setRoleFilter}>
+          <Select value={roleFilter} onValueChange={updateFilter(setRoleFilter)}>
             <SelectTrigger className="w-full sm:w-32">
               <SelectValue placeholder="All roles" />
             </SelectTrigger>
@@ -241,7 +286,7 @@ export default function AdminUsersPage() {
           </Select>
         </FilterField>
         <FilterField label="Department">
-          <Select value={deptFilter} onValueChange={setDeptFilter}>
+          <Select value={deptFilter} onValueChange={updateFilter(setDeptFilter)}>
             <SelectTrigger className="w-full sm:w-44">
               <SelectValue placeholder="All departments" />
             </SelectTrigger>
@@ -254,7 +299,7 @@ export default function AdminUsersPage() {
           </Select>
         </FilterField>
         <FilterField label="Status">
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <Select value={statusFilter} onValueChange={updateFilter(setStatusFilter)}>
             <SelectTrigger className="w-full sm:w-32">
               <SelectValue placeholder="Any status" />
             </SelectTrigger>
@@ -268,12 +313,47 @@ export default function AdminUsersPage() {
         </FilterField>
       </FilterPanel>
 
-      <DataTable
-        columns={columns}
-        data={filtered}
-        getRowId={(u) => u.id}
-        pageSize={10}
-      />
+      {loading ? (
+        <LoadingState rows={6} />
+      ) : (
+        <>
+          <DataTable
+            columns={columns}
+            data={filtered}
+            getRowId={(u) => u.id}
+            pageSize={PAGE_SIZE}
+          />
+          <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">
+            <p role="status">
+              Showing {filtered.length === 0 ? 0 : (page - 1) * PAGE_SIZE + 1}–
+              {(page - 1) * PAGE_SIZE + filtered.length} of {total} users
+            </p>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page <= 1 || loading}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                aria-label="Previous page"
+              >
+                Previous
+              </Button>
+              <span aria-live="polite">
+                Page {page} of {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page >= totalPages || loading}
+                onClick={() => setPage((p) => p + 1)}
+                aria-label="Next page"
+              >
+                Next
+              </Button>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* View user dialog */}
       <Dialog open={!!viewUser} onOpenChange={(open) => !open && setViewUser(null)}>
@@ -324,7 +404,12 @@ export default function AdminUsersPage() {
 
       <ConfirmationDialog
         open={!!confirmAction}
-        onOpenChange={(open) => !open && setConfirmAction(null)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setConfirmAction(null);
+            setActionError(null);
+          }
+        }}
         title={
           confirmAction?.type === "delete"
             ? "Delete user?"
@@ -334,11 +419,12 @@ export default function AdminUsersPage() {
         }
         description={
           confirmAction ? (
-            confirmAction.type === "delete"
+            actionError ??
+            (confirmAction.type === "delete"
               ? `Delete ${confirmAction.user.fullName}? This action cannot be undone.`
               : confirmAction.type === "deactivate"
                 ? `Deactivate ${confirmAction.user.fullName}? They will no longer be able to sign in.`
-                : `Activate ${confirmAction.user.fullName}? They will regain access to the system.`
+                : `Activate ${confirmAction.user.fullName}? They will regain access to the system.`)
           ) : undefined
         }
         confirmLabel={

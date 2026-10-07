@@ -1,91 +1,72 @@
 import * as React from "react";
-import { isSupabaseConfigured } from "@/lib/supabase/client";
-import { getCurrentLecturer, getCurrentStudent } from "@/lib/supabase/auth";
+import { getPgCurrentUser } from "@/lib/auth/client";
 
 export interface StudentIdentity {
   loading: boolean;
-  /** `students`-row id live, `"stud-1"` in mock preview. Null when unavailable. */
+  /** `students`-row id (PostgreSQL). Null when unavailable. */
   studentId: string | null;
-  /** Profile id live (for notifications), mock user id otherwise. */
+  /** Profile id (for notifications). */
   notifUserId: string | null;
 }
 
 export interface LecturerIdentity {
   loading: boolean;
-  /** `lecturers`-row id live, `"lec-1"` in mock preview. Null when unavailable. */
+  /** `lecturers`-row id (PostgreSQL). Null when unavailable. */
   lecturerId: string | null;
-  /** Profile id live (for notifications), mock user id otherwise. */
+  /** Profile id (for notifications). */
   notifUserId: string | null;
 }
 
-/**
- * Resolve the signed-in student's entity + notification ids.
- * Falls back to mock ids only when Supabase is unconfigured.
- */
-export function useStudentIdentity(): StudentIdentity {
+function usePgIdentity(kind: "student" | "lecturer"): {
+  loading: boolean;
+  entityId: string | null;
+  notifUserId: string | null;
+} {
   const [state, setState] = React.useState<{
-    studentId: string | null;
+    entityId: string | null;
     notifUserId: string | null;
-  } | null>(() =>
-    isSupabaseConfigured() ? null : { studentId: "stud-1", notifUserId: "stud-1" },
-  );
+  } | null>(null);
 
   React.useEffect(() => {
-    if (state !== null) return;
     let cancelled = false;
-    getCurrentStudent()
-      .then((current) => {
+    getPgCurrentUser()
+      .then((user) => {
         if (cancelled) return;
-        if (current) {
-          setState({ studentId: current.student.id, notifUserId: current.profile.id });
+        if (user && user.role === kind) {
+          setState({
+            entityId: kind === "student" ? user.studentId : user.lecturerId,
+            notifUserId: user.id,
+          });
         } else {
-          setState({ studentId: null, notifUserId: null });
+          setState({ entityId: null, notifUserId: null });
         }
       })
       .catch(() => {
-        if (!cancelled) setState({ studentId: null, notifUserId: null });
+        if (!cancelled) setState({ entityId: null, notifUserId: null });
       });
     return () => {
       cancelled = true;
     };
-  }, [state]);
+  }, [kind]);
 
-  if (!state) return { loading: true, studentId: null, notifUserId: null };
+  if (!state) return { loading: true, entityId: null, notifUserId: null };
   return { loading: false, ...state };
 }
 
 /**
- * Resolve the signed-in lecturer's entity + notification ids.
- * Falls back to mock ids only when Supabase is unconfigured.
+ * Resolve the signed-in student's entity + notification ids from the
+ * PostgreSQL session (GET /api/pg-auth/me).
+ */
+export function useStudentIdentity(): StudentIdentity {
+  const { loading, entityId, notifUserId } = usePgIdentity("student");
+  return { loading, studentId: entityId, notifUserId };
+}
+
+/**
+ * Resolve the signed-in lecturer's entity + notification ids from the
+ * PostgreSQL session (GET /api/pg-auth/me).
  */
 export function useLecturerIdentity(): LecturerIdentity {
-  const [state, setState] = React.useState<{
-    lecturerId: string | null;
-    notifUserId: string | null;
-  } | null>(() =>
-    isSupabaseConfigured() ? null : { lecturerId: "lec-1", notifUserId: "lec-1" },
-  );
-
-  React.useEffect(() => {
-    if (state !== null) return;
-    let cancelled = false;
-    getCurrentLecturer()
-      .then((current) => {
-        if (cancelled) return;
-        if (current) {
-          setState({ lecturerId: current.lecturer.id, notifUserId: current.profile.id });
-        } else {
-          setState({ lecturerId: null, notifUserId: null });
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setState({ lecturerId: null, notifUserId: null });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [state]);
-
-  if (!state) return { loading: true, lecturerId: null, notifUserId: null };
-  return { loading: false, ...state };
+  const { loading, entityId, notifUserId } = usePgIdentity("lecturer");
+  return { loading, lecturerId: entityId, notifUserId };
 }

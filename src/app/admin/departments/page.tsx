@@ -23,7 +23,7 @@ import {
 import { LoadingState } from "@/components/loading-state";
 import { EmptyState } from "@/components/empty-state";
 import { ConfirmationDialog } from "@/components/confirmation-dialog";
-import { getDepartments } from "@/lib/services/users";
+import { getDepartments, createDepartment, updateDepartment, deleteDepartment } from "@/lib/services/users";
 import { formatDate } from "@/lib/format";
 import type { Department } from "@/lib/types";
 
@@ -41,6 +41,8 @@ export default function AdminDepartmentsPage() {
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<Department | null>(null);
   const [deleteId, setDeleteId] = React.useState<string | null>(null);
+  const [formError, setFormError] = React.useState<string | null>(null);
+  const [saving, setSaving] = React.useState(false);
 
   const {
     register,
@@ -61,12 +63,14 @@ export default function AdminDepartmentsPage() {
 
   const openAdd = () => {
     setEditing(null);
+    setFormError(null);
     reset({ name: "", code: "", description: "" });
     setDialogOpen(true);
   };
 
   const openEdit = (dept: Department) => {
     setEditing(dept);
+    setFormError(null);
     reset({
       name: dept.name,
       code: dept.code,
@@ -75,52 +79,54 @@ export default function AdminDepartmentsPage() {
     setDialogOpen(true);
   };
 
-  const onSubmit = (values: DeptValues) => {
-    if (editing) {
-      setDepartments((prev) =>
-        prev.map((d) =>
-          d.id === editing.id
-            ? {
-                ...d,
-                name: values.name,
-                code: values.code,
-                description: values.description,
-              }
-            : d,
-        ),
-      );
-    } else {
-      const now = new Date().toISOString();
-      const id = `dept-${values.code.toLowerCase()}`;
-      setDepartments((prev) => [
-        ...prev,
-        {
-          id,
+  const onSubmit = async (values: DeptValues) => {
+    setFormError(null);
+    setSaving(true);
+    try {
+      if (editing) {
+        const updated = await updateDepartment(editing.id, {
           name: values.name,
-          code: values.code,
-          description: values.description,
-          status: "active",
-          createdAt: now,
-        },
-      ]);
+          code: values.code || null,
+          description: values.description || null,
+        });
+        setDepartments((prev) => prev.map((d) => (d.id === editing.id ? updated : d)));
+      } else {
+        const created = await createDepartment({
+          name: values.name,
+          code: values.code || undefined,
+          description: values.description || undefined,
+        });
+        setDepartments((prev) => [...prev, created]);
+      }
+      setDialogOpen(false);
+    } catch (e) {
+      setFormError(e instanceof Error ? e.message : "Could not save the department.");
+    } finally {
+      setSaving(false);
     }
-    setDialogOpen(false);
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!deleteId) return;
-    setDepartments((prev) => prev.filter((d) => d.id !== deleteId));
-    setDeleteId(null);
+    setFormError(null);
+    try {
+      await deleteDepartment(deleteId);
+      setDepartments((prev) => prev.filter((d) => d.id !== deleteId));
+      setDeleteId(null);
+    } catch (e) {
+      setFormError(e instanceof Error ? e.message : "Could not delete the department.");
+      setDeleteId(null);
+    }
   };
 
-  const handleToggle = (dept: Department) => {
-    setDepartments((prev) =>
-      prev.map((d) =>
-        d.id === dept.id
-          ? { ...d, status: d.status === "active" ? "inactive" : "active" }
-          : d,
-      ),
-    );
+  const handleToggle = async (dept: Department) => {
+    const next = dept.status === "active" ? false : true;
+    try {
+      const updated = await updateDepartment(dept.id, { isActive: next });
+      setDepartments((prev) => prev.map((d) => (d.id === dept.id ? updated : d)));
+    } catch {
+      // Keep existing state on failure.
+    }
   };
 
   if (loading) {
@@ -233,11 +239,18 @@ export default function AdminDepartmentsPage() {
                 {...register("description")}
               />
             </div>
+            {formError && (
+              <p className="text-sm text-destructive" role="alert">
+                {formError}
+              </p>
+            )}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit">{editing ? "Save changes" : "Add department"}</Button>
+              <Button type="submit" disabled={saving}>
+                {saving ? "Saving..." : editing ? "Save changes" : "Add department"}
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>

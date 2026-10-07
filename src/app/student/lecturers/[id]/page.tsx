@@ -22,7 +22,6 @@ import { ErrorState } from "@/components/error-state";
 import { AvailabilityCalendar, type Slot } from "@/components/calendar/availability-calendar";
 import { getLecturerById } from "@/lib/services/lecturers";
 import { getAvailabilityExceptions, getAvailabilityForLecturer } from "@/lib/services/availability";
-import { getDepartmentName, getCourseName } from "@/lib/services/lecturers";
 import { getAppointmentsByLecturer } from "@/lib/services/appointments";
 import { getDepartments, getCourses } from "@/lib/services/users";
 import type { LecturerProfile, AvailabilityRule, AvailabilityException, Appointment, Department, Course } from "@/lib/types";
@@ -90,9 +89,10 @@ export default function LecturerProfilePage() {
 
   const deptName =
     departments.find((d) => d.id === lecturer.departmentId)?.name ??
-    getDepartmentName(lecturer.departmentId);
+    lecturer.departmentName ??
+    "—";
   const courseNames = lecturer.courses.map(
-    (id) => courses.find((c) => c.id === id)?.title ?? getCourseName(id),
+    (id) => courses.find((c) => c.id === id)?.title ?? "—",
   );
 
   const bookedSlots = appointments

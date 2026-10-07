@@ -13,8 +13,7 @@ import { LoadingState } from "@/components/loading-state";
 import { ErrorState } from "@/components/error-state";
 import { ConfirmationDialog } from "@/components/confirmation-dialog";
 import { cancelAppointment, getAppointmentById } from "@/lib/services/appointments";
-import { getLecturerName, getCourseName } from "@/lib/services/lecturers";
-import { getCurrentProfile } from "@/lib/supabase/auth";
+import { getPgCurrentUser } from "@/lib/auth/client";
 import { formatDate, formatTime, formatDateTime } from "@/lib/format";
 import type { Appointment } from "@/lib/types";
 
@@ -39,9 +38,9 @@ export default function StudentAppointmentDetailPage() {
       }
     };
     load();
-    getCurrentProfile()
-      .then((p) => {
-        if (p) setViewerName(p.full_name);
+    getPgCurrentUser()
+      .then((user) => {
+        if (user) setViewerName(user.fullName);
       })
       .catch(() => undefined);
   }, [params.id]);
@@ -79,8 +78,8 @@ export default function StudentAppointmentDetailPage() {
     );
   }
 
-  const lecturerName = appointment.lecturerName ?? getLecturerName(appointment.lecturerId);
-  const courseName = appointment.courseName ?? getCourseName(appointment.courseId);
+  const lecturerName = appointment.lecturerName ?? "Lecturer";
+  const courseName = appointment.courseName ?? "—";
   const now = new Date();
   const apptDate = new Date(appointment.date);
   const isUpcoming = apptDate >= now && ["pending", "approved", "rescheduled"].includes(appointment.status);

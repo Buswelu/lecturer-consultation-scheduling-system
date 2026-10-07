@@ -15,9 +15,7 @@ import {
   getAvailabilityExceptions,
   getAvailabilityForLecturer,
 } from "@/lib/services/availability";
-import { getCurrentLecturer } from "@/lib/supabase/auth";
-import { getStudentById } from "@/lib/services/users";
-import { getCourseName } from "@/lib/services/lecturers";
+import { getPgCurrentUser } from "@/lib/auth/client";
 import { dayNameToIndex } from "@/lib/scheduling/datetime";
 import type {
   Appointment,
@@ -49,8 +47,8 @@ export default function LecturerCalendarPage() {
   React.useEffect(() => {
     const load = async () => {
       try {
-        const current = await getCurrentLecturer().catch(() => null);
-        const lecturerId = current?.lecturer.id ?? MOCK_LECTURER_ID;
+        const user = await getPgCurrentUser().catch(() => null);
+        const lecturerId = user?.lecturerId ?? MOCK_LECTURER_ID;
         const [appts, avails, exs] = await Promise.all([
           getAppointmentsByLecturer(lecturerId),
           getAvailabilityForLecturer(lecturerId),
@@ -97,10 +95,9 @@ export default function LecturerCalendarPage() {
   const appointmentEvents = appointments
     .filter((a) => a.status !== "rejected")
     .map((a) => {
-      const student = getStudentById(a.studentId);
       return {
         id: a.id,
-        title: `${student?.fullName ?? "Student"} - ${getCourseName(a.courseId)}`,
+        title: `${a.studentName ?? "Student"} - ${a.courseName ?? "—"}`,
         start: toDateTime(a.date, a.startTime),
         end: toDateTime(a.date, a.endTime),
         backgroundColor: statusColors[a.status],

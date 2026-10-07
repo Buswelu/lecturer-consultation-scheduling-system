@@ -16,9 +16,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { getAppointments } from "@/lib/services/appointments";
-import { getUsers, getDepartments, getCourses } from "@/lib/services/users";
-import { getCourseName } from "@/lib/services/lecturers";
+import { getAppointmentsPage } from "@/lib/services/appointments";
+import { getDepartments, getCourses } from "@/lib/services/users";
+import { LoadingState } from "@/components/loading-state";
 import { formatDate, formatTime } from "@/lib/format";
 import type { Appointment } from "@/lib/types";
 import type { Department, Course } from "@/lib/types";
@@ -39,73 +39,86 @@ export default function AdminAppointmentsPage() {
   const [appointments, setAppointments] = React.useState<Appointment[]>([]);
   const [departments, setDepartments] = React.useState<Department[]>([]);
   const [courses, setCourses] = React.useState<Course[]>([]);
-  const [userNames, setUserNames] = React.useState<Record<string, string>>({});
   const [search, setSearch] = React.useState("");
   const [status, setStatus] = React.useState("all");
   const [deptFilter, setDeptFilter] = React.useState("all");
   const [courseFilter, setCourseFilter] = React.useState("all");
+  const [page, setPage] = React.useState(1);
+  const [total, setTotal] = React.useState(0);
+  const [loading, setLoading] = React.useState(true);
+
+  const PAGE_SIZE = 20;
+
+  // Debounced search so typing doesn't fan out requests.
+  const [debouncedSearch, setDebouncedSearch] = React.useState(search);
+  React.useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 350);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  // Server-driven list: search/status/course/department/pagination in SQL.
+  React.useEffect(() => {
+    let cancelled = false;
+    getAppointmentsPage(
+      {
+        search: debouncedSearch || undefined,
+        status: status === "all" ? undefined : (status as Appointment["status"]),
+        courseId: courseFilter === "all" ? undefined : courseFilter,
+        departmentId: deptFilter === "all" ? undefined : deptFilter,
+      },
+      page,
+      PAGE_SIZE,
+    )
+      .then((result) => {
+        if (cancelled) return;
+        setAppointments(result.items);
+        setTotal(result.total);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedSearch, status, courseFilter, deptFilter, page]);
 
   React.useEffect(() => {
-    Promise.all([getAppointments(), getDepartments(), getCourses(), getUsers()]).then(
-      ([appts, deps, crs, users]) => {
-        setAppointments(appts);
-        setDepartments(deps);
-        setCourses(crs);
-        const nameMap: Record<string, string> = {};
-        users.forEach((u) => {
-          nameMap[u.id] = u.fullName;
-        });
-        setUserNames(nameMap);
-      },
-    );
+    Promise.all([getDepartments(), getCourses()]).then(([deps, crs]) => {
+      setDepartments(deps);
+      setCourses(crs);
+    });
   }, []);
 
-  const filtered = React.useMemo(() => {
-    let result = appointments;
-    if (search) {
-      const q = search.toLowerCase();
-      result = result.filter((a) => {
-        const studentName = (userNames[a.studentId] ?? "").toLowerCase();
-        const lecturerName = (userNames[a.lecturerId] ?? "").toLowerCase();
-        const courseName = (a.courseName ?? getCourseName(a.courseId)).toLowerCase();
-        return (
-          studentName.includes(q) ||
-          lecturerName.includes(q) ||
-          courseName.includes(q) ||
-          a.reason.toLowerCase().includes(q)
-        );
-      });
-    }
-    if (status !== "all") result = result.filter((a) => a.status === status);
-    if (courseFilter !== "all") result = result.filter((a) => a.courseId === courseFilter);
-    if (deptFilter !== "all") {
-      const courseIdsInDept = new Set(
-        courses.filter((c) => c.departmentId === deptFilter).map((c) => c.id),
-      );
-      result = result.filter((a) => courseIdsInDept.has(a.courseId));
-    }
-    return result;
-  }, [appointments, search, status, courseFilter, deptFilter, courses, userNames]);
+  const updateFilter = (setter: (v: string) => void) => (v: string) => {
+    setLoading(true);
+    setPage(1);
+    setter(v);
+  };
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  const filtered = appointments;
 
   const columns: Column<Appointment>[] = [
     {
       key: "student",
       header: "Student",
-      sortValue: (a) => userNames[a.studentId] ?? "",
-      cell: (a) => <span className="font-medium">{userNames[a.studentId] ?? "Unknown"}</span>,
+      sortValue: (a) => a.studentName ?? "",
+      cell: (a) => <span className="font-medium">{a.studentName ?? "Unknown"}</span>,
     },
     {
       key: "lecturer",
       header: "Lecturer",
-      sortValue: (a) => userNames[a.lecturerId] ?? "",
-      cell: (a) => <span>{userNames[a.lecturerId] ?? "Unknown"}</span>,
+      sortValue: (a) => a.lecturerName ?? "",
+      cell: (a) => <span>{a.lecturerName ?? "Unknown"}</span>,
     },
     {
       key: "course",
       header: "Course",
-      sortValue: (a) => a.courseName ?? getCourseName(a.courseId),
+      sortValue: (a) => a.courseName ?? "",
       cell: (a) => (
-        <span className="text-sm text-muted-foreground">{a.courseName ?? getCourseName(a.courseId)}</span>
+        <span className="text-sm text-muted-foreground">{a.courseName ?? "—"}</span>
       ),
     },
     {
@@ -150,6 +163,7 @@ export default function AdminAppointmentsPage() {
     setStatus("all");
     setDeptFilter("all");
     setCourseFilter("all");
+    setPage(1);
   };
 
   return (
@@ -164,11 +178,15 @@ export default function AdminAppointmentsPage() {
           <SearchBar
             placeholder="Search student, lecturer, course..."
             value={search}
-            onChange={setSearch}
+            onChange={(v) => {
+              setLoading(true);
+              setPage(1);
+              setSearch(v);
+            }}
           />
         </FilterField>
         <FilterField label="Status">
-          <Select value={status} onValueChange={setStatus}>
+          <Select value={status} onValueChange={updateFilter(setStatus)}>
             <SelectTrigger className="w-full sm:w-36">
               <SelectValue placeholder="All statuses" />
             </SelectTrigger>
@@ -182,7 +200,7 @@ export default function AdminAppointmentsPage() {
           </Select>
         </FilterField>
         <FilterField label="Department">
-          <Select value={deptFilter} onValueChange={setDeptFilter}>
+          <Select value={deptFilter} onValueChange={updateFilter(setDeptFilter)}>
             <SelectTrigger className="w-full sm:w-44">
               <SelectValue placeholder="All departments" />
             </SelectTrigger>
@@ -195,7 +213,7 @@ export default function AdminAppointmentsPage() {
           </Select>
         </FilterField>
         <FilterField label="Course">
-          <Select value={courseFilter} onValueChange={setCourseFilter}>
+          <Select value={courseFilter} onValueChange={updateFilter(setCourseFilter)}>
             <SelectTrigger className="w-full sm:w-44">
               <SelectValue placeholder="All courses" />
             </SelectTrigger>
@@ -209,15 +227,50 @@ export default function AdminAppointmentsPage() {
         </FilterField>
       </FilterPanel>
 
-      <DataTable
-        columns={columns}
-        data={filtered}
-        getRowId={(a) => a.id}
-        pageSize={10}
-        onRowClick={(a) => {
-          router.push(`/admin/appointments/${a.id}`);
-        }}
-      />
+      {loading ? (
+        <LoadingState rows={6} />
+      ) : (
+        <>
+          <DataTable
+            columns={columns}
+            data={filtered}
+            getRowId={(a) => a.id}
+            pageSize={PAGE_SIZE}
+            onRowClick={(a) => {
+              router.push(`/admin/appointments/${a.id}`);
+            }}
+          />
+          <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">
+            <p role="status">
+              Showing {filtered.length === 0 ? 0 : (page - 1) * PAGE_SIZE + 1}–
+              {(page - 1) * PAGE_SIZE + filtered.length} of {total} appointments
+            </p>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page <= 1 || loading}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                aria-label="Previous page"
+              >
+                Previous
+              </Button>
+              <span aria-live="polite">
+                Page {page} of {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page >= totalPages || loading}
+                onClick={() => setPage((p) => p + 1)}
+                aria-label="Next page"
+              >
+                Next
+              </Button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

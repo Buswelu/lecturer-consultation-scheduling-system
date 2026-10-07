@@ -22,9 +22,7 @@ import {
   rejectAppointment,
   rescheduleAppointment,
 } from "@/lib/services/appointments";
-import { getCurrentProfile } from "@/lib/supabase/auth";
-import { getStudentById } from "@/lib/services/users";
-import { getCourseName } from "@/lib/services/lecturers";
+import { getPgCurrentUser } from "@/lib/auth/client";
 import { useLecturerIdentity } from "@/hooks/useSessionIds";
 import { todayYMD } from "@/lib/scheduling/datetime";
 import { EmptyState } from "@/components/empty-state";
@@ -60,14 +58,13 @@ export default function LecturerDashboardPage() {
   }, [lecturerId]);
 
   useEffect(() => {
-    // Real authenticated profile for the welcome message; falls back to
-    // the demo name when Supabase is unconfigured (mock preview mode).
-    getCurrentProfile()
-      .then((profile) => {
-        if (profile) setProfileName(profile.full_name);
+    // Real PostgreSQL-authenticated profile for the welcome message.
+    getPgCurrentUser()
+      .then((user) => {
+        if (user) setProfileName(user.fullName);
       })
       .catch(() => {
-        // Keep the fallback name.
+        // Keep the greeting without a name.
       });
   }, []);
 
@@ -172,7 +169,7 @@ export default function LecturerDashboardPage() {
     <div className="space-y-8">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">
-          {getGreeting()}, {profileName ?? "Dr. Sarah"}
+          {getGreeting()}{profileName ? `, ${profileName}` : ""}
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Here is an overview of your consultation schedule.
@@ -233,8 +230,7 @@ export default function LecturerDashboardPage() {
                 />
               ) : (
                 pending.map((appt) => {
-                  const studentName =
-                    appt.studentName ?? getStudentById(appt.studentId)?.fullName ?? "Student";
+                  const studentName = appt.studentName ?? "Student";
                   return (
                     <div
                       key={appt.id}
@@ -244,7 +240,7 @@ export default function LecturerDashboardPage() {
                         <div>
                           <p className="font-semibold">{studentName}</p>
                           <p className="mt-1 text-sm text-muted-foreground">
-                            {appt.courseName ?? getCourseName(appt.courseId)}
+                            {appt.courseName ?? "—"}
                           </p>
                         </div>
                       <StatusBadge status={appt.status} />
@@ -311,10 +307,10 @@ export default function LecturerDashboardPage() {
                     <StatusBadge status={nextAppt.status} />
                   </div>
                   <p className="font-semibold">
-                    {nextAppt.studentName ?? getStudentById(nextAppt.studentId)?.fullName ?? "Student"}
+                    {nextAppt.studentName ?? "Student"}
                   </p>
                   <p className="text-sm text-muted-foreground">
-                    {nextAppt.courseName ?? getCourseName(nextAppt.courseId)}
+                    {nextAppt.courseName ?? "—"}
                   </p>
                   <p className="text-sm text-muted-foreground">
                     {formatDateLong(nextAppt.date)} · {formatTime(nextAppt.startTime)} -{" "}

@@ -34,8 +34,6 @@ import {
   rejectAppointment,
   rescheduleAppointment,
 } from "@/lib/services/appointments";
-import { getStudentById } from "@/lib/services/users";
-import { getCourseName } from "@/lib/services/lecturers";
 import { formatDate, formatTime, formatDateTime } from "@/lib/format";
 import type { Appointment } from "@/lib/types";
 
@@ -133,9 +131,8 @@ export default function LecturerAppointmentDetailPage() {
     );
   }
 
-  const studentName =
-    appointment.studentName ?? getStudentById(appointment.studentId)?.fullName ?? "Student";
-  const courseName = appointment.courseName ?? getCourseName(appointment.courseId);
+  const studentName = appointment.studentName ?? "Student";
+  const courseName = appointment.courseName ?? "—";
 
   const confirmConfig = action
     ? {

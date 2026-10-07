@@ -30,8 +30,6 @@ import {
   rejectAppointment,
   rescheduleAppointment,
 } from "@/lib/services/appointments";
-import { getStudentById } from "@/lib/services/users";
-import { getCourseName } from "@/lib/services/lecturers";
 import { useLecturerIdentity } from "@/hooks/useSessionIds";
 import { todayYMD } from "@/lib/scheduling/datetime";
 import { formatDate, formatTime } from "@/lib/format";
@@ -264,8 +262,7 @@ export default function LecturerAppointmentsPage() {
               ) : (
                 <div className="grid gap-4">
                   {items.map((appt) => {
-                    const studentName =
-                      appt.studentName ?? getStudentById(appt.studentId)?.fullName ?? "Student";
+                    const studentName = appt.studentName ?? "Student";
                     return (
                       <Card key={appt.id}>
                         <CardContent className="p-5">
@@ -279,7 +276,7 @@ export default function LecturerAppointmentsPage() {
                                   {studentName}
                                 </p>
                                 <p className="mt-0.5 text-sm text-muted-foreground">
-                                  {appt.courseName ?? getCourseName(appt.courseId)}
+                                  {appt.courseName ?? "—"}
                                 </p>
                               </div>
                             </div>

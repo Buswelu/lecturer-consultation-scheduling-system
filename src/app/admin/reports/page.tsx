@@ -6,30 +6,36 @@ import { FileBarChart, Download } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { getAppointments } from "@/lib/services/appointments";
-import { getUsers } from "@/lib/services/users";
 import { getDepartments } from "@/lib/services/users";
-import { getCourseName } from "@/lib/services/lecturers";
-import type { Appointment } from "@/lib/types";
+import { getCourses } from "@/lib/services/courses";
+import { apiGet } from "@/lib/services/http";
+import type { ReportsSummary } from "@/lib/db/repositories/reports";
 
 export default function AdminReportsPage() {
-  const [appointments, setAppointments] = React.useState<Appointment[]>([]);
-  const [userCount, setUserCount] = React.useState({ students: 0, lecturers: 0 });
+  const [reports, setReports] = React.useState<ReportsSummary | null>(null);
   const [deptCount, setDeptCount] = React.useState(0);
+  const [courseCount, setCourseCount] = React.useState(0);
   const [loading, setLoading] = React.useState(true);
+  const [loadError, setLoadError] = React.useState(false);
 
   useEffect(() => {
-    Promise.all([getAppointments(), getUsers(), getDepartments()]).then(
-      ([appts, users, depts]) => {
-        setAppointments(appts);
-        setUserCount({
-          students: users.filter((u) => u.role === "student").length,
-          lecturers: users.filter((u) => u.role === "lecturer").length,
-        });
+    // Server-computed aggregates (SQL COUNT/GROUP BY) — the browser never
+    // calculates authoritative totals from raw rows.
+    Promise.all([
+      apiGet<{ reports: ReportsSummary }>("/api/admin/reports").then((r) => r.reports),
+      getDepartments().catch(() => []),
+      getCourses().catch(() => []),
+    ])
+      .then(([rep, depts, courses]) => {
+        setReports(rep);
         setDeptCount(depts.length);
+        setCourseCount(courses.length);
         setLoading(false);
-      },
-    );
+      })
+      .catch(() => {
+        setLoadError(true);
+        setLoading(false);
+      });
   }, []);
 
   if (loading) {
@@ -45,23 +51,33 @@ export default function AdminReportsPage() {
     );
   }
 
-  // Summary metrics
-  const approved = appointments.filter((a) => a.status === "approved").length;
-  const completed = appointments.filter((a) => a.status === "completed").length;
-  const pending = appointments.filter((a) => a.status === "pending").length;
-  const cancelled = appointments.filter((a) => a.status === "cancelled").length;
-  const noShow = appointments.filter((a) => a.status === "no-show").length;
-  const online = appointments.filter((a) => a.type === "online").length;
-  const inPerson = appointments.filter((a) => a.type === "in-person").length;
-  const total = Math.max(1, appointments.length);
+  if (loadError || !reports) {
+    return (
+      <div>
+        <PageHeader title="Reports" />
+        <p className="text-sm text-destructive">
+          Couldn&apos;t load the reports. Please try again.
+        </p>
+        <Button className="mt-4" onClick={() => window.location.reload()}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
 
-  // Appointments by month
-  const monthMap = new Map<string, number>();
-  appointments.forEach((a) => {
-    const month = a.date.slice(0, 7);
-    monthMap.set(month, (monthMap.get(month) ?? 0) + 1);
-  });
-  const monthData = [...monthMap.entries()].sort(([a], [b]) => a.localeCompare(b)).slice(-6);
+  // Summary metrics (all server-aggregated).
+  const byStatus = reports.appointmentsByStatus;
+  const approved = byStatus.approved ?? 0;
+  const completed = byStatus.completed ?? 0;
+  const pending = byStatus.pending ?? 0;
+  const cancelled = byStatus.cancelled ?? 0;
+  const noShow = byStatus.no_show ?? 0;
+  const online = reports.appointmentsByType.online;
+  const inPerson = reports.appointmentsByType.inPerson;
+  const total = Math.max(1, reports.totals.appointments);
+
+  // Appointments by month (EAT wall-clock months, newest last).
+  const monthData = reports.appointmentsByMonth.map((m) => [m.month, m.count] as [string, number]);
   const maxMonth = Math.max(1, ...monthData.map(([, c]) => c));
 
   const monthLabel = (ym: string) => {
@@ -69,19 +85,17 @@ export default function AdminReportsPage() {
     return `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][parseInt(m, 10) - 1]} '${y.slice(2)}`;
   };
 
-  // Most popular course
-  const courseCount = new Map<string, number>();
-  appointments.forEach((a) => {
-    courseCount.set(a.courseId, (courseCount.get(a.courseId) ?? 0) + 1);
-  });
-  const topCourses = [...courseCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+  // Most popular courses (server-ranked with names).
+  const topCourses = reports.topCourses.map(
+    (c) => [c.courseId, c.count, c.courseName] as [string, number, string],
+  );
 
   const statusData = [
     { label: "Approved", count: approved, color: "bg-green-500" },
     { label: "Completed", count: completed, color: "bg-blue-500" },
     { label: "Pending", count: pending, color: "bg-amber-500" },
     { label: "Cancelled", count: cancelled, color: "bg-gray-400" },
-    { label: "Rejected", count: appointments.filter((a) => a.status === "rejected").length, color: "bg-red-500" },
+    { label: "Rejected", count: byStatus.rejected ?? 0, color: "bg-red-500" },
     { label: "No-show", count: noShow, color: "bg-red-400" },
   ];
 
@@ -105,7 +119,7 @@ export default function AdminReportsPage() {
 
       {/* Summary metrics */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <MetricCard label="Total Appointments" value={appointments.length} />
+        <MetricCard label="Total Appointments" value={reports.totals.appointments} />
         <MetricCard label="Approval Rate" value={`${Math.round((approved / total) * 100)}%`} />
         <MetricCard label="Completion Rate" value={`${Math.round((completed / total) * 100)}%`} />
         <MetricCard label="No-show Rate" value={`${Math.round((noShow / total) * 100)}%`} />
@@ -153,12 +167,12 @@ export default function AdminReportsPage() {
               </p>
             ) : (
               <div className="space-y-4">
-                {topCourses.map(([courseId, count]) => {
+                {topCourses.map(([courseId, count, courseName]) => {
                   const max = topCourses[0][1];
                   return (
                     <div key={courseId}>
                       <div className="mb-1 flex items-center justify-between text-sm">
-                        <span className="truncate pr-4">{getCourseName(courseId)}</span>
+                        <span className="truncate pr-4">{courseName}</span>
                         <span className="font-medium">{count}</span>
                       </div>
                       <div className="h-2 overflow-hidden rounded-full bg-muted">
@@ -208,10 +222,10 @@ export default function AdminReportsPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
-              <MetricMini label="Students" value={userCount.students} />
-              <MetricMini label="Lecturers" value={userCount.lecturers} />
+              <MetricMini label="Students" value={reports.studentStats.length} />
+              <MetricMini label="Lecturers" value={reports.lecturerStats.length} />
               <MetricMini label="Departments" value={deptCount} />
-              <MetricMini label="Courses" value={appointments.length} />
+              <MetricMini label="Courses" value={courseCount} />
             </div>
             <div>
               <p className="mb-2 text-sm font-medium">Consultation Types</p>

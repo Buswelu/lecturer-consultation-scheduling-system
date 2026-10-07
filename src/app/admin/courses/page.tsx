@@ -30,7 +30,12 @@ import {
 import { LoadingState } from "@/components/loading-state";
 import { EmptyState } from "@/components/empty-state";
 import { getDepartments, getCourses, getUsers } from "@/lib/services/users";
-import { getDepartmentName } from "@/lib/services/lecturers";
+import {
+  createCourse,
+  updateCourse,
+  assignLecturerToCourse,
+  unassignLecturerFromCourse,
+} from "@/lib/services/courses";
 import type { Department, Course } from "@/lib/types";
 import type { UserWithDepartment } from "@/lib/services/users";
 
@@ -53,6 +58,8 @@ export default function AdminCoursesPage() {
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<Course | null>(null);
   const [assignedLecturers, setAssignedLecturers] = React.useState<string[]>([]);
+  const [formError, setFormError] = React.useState<string | null>(null);
+  const [saving, setSaving] = React.useState(false);
 
   const {
     register,
@@ -87,6 +94,7 @@ export default function AdminCoursesPage() {
   const openAdd = () => {
     setEditing(null);
     setAssignedLecturers([]);
+    setFormError(null);
     reset({
       title: "",
       code: "",
@@ -101,6 +109,7 @@ export default function AdminCoursesPage() {
   const openEdit = (course: Course) => {
     setEditing(course);
     setAssignedLecturers(course.lecturerIds);
+    setFormError(null);
     reset({
       title: course.title,
       code: course.code,
@@ -112,43 +121,61 @@ export default function AdminCoursesPage() {
     setDialogOpen(true);
   };
 
-  const onSubmit = (values: CourseValues) => {
-    const lecturerIds = assignedLecturers;
-    if (editing) {
-      setCourses((prev) =>
-        prev.map((c) =>
-          c.id === editing.id
-            ? {
-                ...c,
-                title: values.title,
-                code: values.code,
-                departmentId: values.departmentId,
-                credits: values.credits ? parseInt(values.credits, 10) : 3,
-                description: values.description,
-                lecturerIds,
-              }
-            : c,
-        ),
-      );
-    } else {
-      const now = new Date().toISOString();
-      const id = `course-${values.code.toLowerCase()}`;
-      setCourses((prev) => [
-        ...prev,
-        {
-          id,
+  const onSubmit = async (values: CourseValues) => {
+    setFormError(null);
+    setSaving(true);
+    try {
+      if (editing) {
+        const updated = await updateCourse(editing.id, {
           title: values.title,
           code: values.code,
           departmentId: values.departmentId,
-          lecturerIds,
-          credits: values.credits ? parseInt(values.credits, 10) : 3,
           description: values.description,
-          status: "active",
-          createdAt: now,
-        },
-      ]);
+          credits: values.credits ? parseInt(values.credits, 10) : undefined,
+        });
+        // Sync assignments: add new links, remove dropped ones.
+        const before = new Set(editing.lecturerIds);
+        const after = new Set(assignedLecturers);
+        for (const id of after) {
+          if (!before.has(id)) await assignLecturerToCourse(editing.id, id);
+        }
+        for (const id of before) {
+          if (!after.has(id)) await unassignLecturerFromCourse(editing.id, id);
+        }
+        const refreshed = { ...updated, lecturerIds: [...assignedLecturers] };
+        setCourses((prev) => prev.map((c) => (c.id === editing.id ? refreshed : c)));
+      } else {
+        const created = await createCourse(
+          {
+            title: values.title,
+            code: values.code,
+            departmentId: values.departmentId,
+            description: values.description,
+            credits: values.credits ? parseInt(values.credits, 10) : undefined,
+          },
+        );
+        for (const id of assignedLecturers) {
+          await assignLecturerToCourse(created.id, id);
+        }
+        setCourses((prev) => [...prev, { ...created, lecturerIds: [...assignedLecturers] }]);
+      }
+      setDialogOpen(false);
+    } catch (e) {
+      setFormError(e instanceof Error ? e.message : "Could not save the course.");
+    } finally {
+      setSaving(false);
     }
-    setDialogOpen(false);
+  };
+
+  const handleToggleActive = async (course: Course) => {
+    try {
+      const updated = await updateCourse(course.id, {
+        isActive: course.status !== "active",
+      });
+      setCourses((prev) => prev.map((c) => (c.id === course.id ? updated : c)));
+    } catch {
+      // Keep existing state on failure.
+    }
   };
 
   const toggleLecturer = (id: string) => {
@@ -203,7 +230,7 @@ export default function AdminCoursesPage() {
                 </div>
                 <h3 className="mt-4 font-semibold">{course.title}</h3>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  {getDepartmentName(course.departmentId)} · {course.credits} credits
+                  {departments.find((d) => d.id === course.departmentId)?.name ?? "—"} · {course.credits} credits
                 </p>
                 {course.description && (
                   <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">
@@ -228,6 +255,14 @@ export default function AdminCoursesPage() {
                 >
                   <Pencil className="mr-1.5 h-3.5 w-3.5" />
                   Edit
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="mt-4 ml-2"
+                  onClick={() => handleToggleActive(course)}
+                >
+                  {course.status === "active" ? "Deactivate" : "Activate"}
                 </Button>
               </CardContent>
             </Card>
@@ -315,8 +350,15 @@ export default function AdminCoursesPage() {
               <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit">{editing ? "Save changes" : "Add course"}</Button>
+              <Button type="submit" disabled={saving}>
+                {saving ? "Saving..." : editing ? "Save changes" : "Add course"}
+              </Button>
             </DialogFooter>
+            {formError && (
+              <p className="text-sm text-destructive" role="alert">
+                {formError}
+              </p>
+            )}
           </form>
         </DialogContent>
       </Dialog>
