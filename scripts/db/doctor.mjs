@@ -101,6 +101,31 @@ if (secret.length >= 32) {
   );
 }
 
+const appUrlRaw = (process.env.APP_URL ?? "").trim();
+if (!appUrlRaw) {
+  if (process.env.NODE_ENV === "production") {
+    fail("APP_URL is set", "production links and cookies need a canonical https URL");
+  } else {
+    warn("APP_URL is set", "defaults to http://localhost:3000 (development only)");
+  }
+} else {
+  let appUrlOk = false;
+  try {
+    const parsed = new URL(appUrlRaw);
+    appUrlOk =
+      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      !parsed.username &&
+      (process.env.NODE_ENV !== "production" || parsed.protocol === "https:");
+  } catch {
+    appUrlOk = false;
+  }
+  if (appUrlOk) {
+    pass("APP_URL is a valid http(s) URL (https in production)");
+  } else {
+    fail("APP_URL is a valid http(s) URL (https in production)", "check the value (never commit secrets)");
+  }
+}
+
 if (process.env.NODE_ENV === "production" && process.env.LCSS_DEV_TOKENS === "1") {
   fail("LCSS_DEV_TOKENS disabled in production", "dev tokens would leak reset links");
 } else if (process.env.LCSS_DEV_TOKENS === "1") {

@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getPool } from "@/lib/db/pool";
 import {
+  buildSessionCookie,
   createSession,
   destroyAllUserSessions,
   destroySession,
@@ -94,8 +95,7 @@ describe("pg sessions", () => {
     expect(await getSessionUser(second.token)).toBeNull();
   });
 
-  it("deactivated accounts fail session validation even with live tokens", async () => {
-    const email = testEmail("deactivated-session");
+  it("deactivated accounts fail session validation even with live tokens", async () => {    const email = testEmail("deactivated-session");
     const reg = await registerPgUser({
       email,
       password: "deactivated-pass-123",
@@ -109,5 +109,23 @@ describe("pg sessions", () => {
     await setPgUserActive(reg.user.id, false);
     // Deactivation revokes sessions AND validation rejects inactive users.
     expect(await getSessionUser(token)).toBeNull();
+  });
+
+  it("session cookie is HttpOnly/Lax and Secure exactly in production", async () => {
+    const env = process.env as Record<string, string | undefined>;
+    const previous = env.NODE_ENV;
+    try {
+      env.NODE_ENV = "development";
+      const dev = buildSessionCookie("t".repeat(64));
+      expect(dev.options.httpOnly).toBe(true);
+      expect(dev.options.sameSite).toBe("lax");
+      expect(dev.options.path).toBe("/");
+      expect(dev.options.secure).toBe(false);
+      expect(dev.options.maxAge).toBeGreaterThan(0);
+      env.NODE_ENV = "production";
+      expect(buildSessionCookie("t".repeat(64)).options.secure).toBe(true);
+    } finally {
+      env.NODE_ENV = previous;
+    }
   });
 });

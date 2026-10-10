@@ -15,6 +15,13 @@ import { queryOne } from "@/lib/db/query";
 import { withTransaction } from "@/lib/db/transaction";
 import { normalizeEmail } from "@/lib/security/normalize-email";
 import { authRateLimitConfig } from "@/lib/security/auth-rate-limit-config";
+import { authLogContextFor, logAuthEvent } from "@/lib/security/auth-log";
+import {
+  emailProviderKind,
+  passwordResetUrl,
+  verificationUrl,
+} from "@/lib/email/config";
+import { resolveEmailProvider } from "@/lib/email/provider";
 import {
   EMAIL_VERIFICATION_TTL_SECONDS,
   PASSWORD_RESET_TTL_SECONDS,
@@ -160,8 +167,10 @@ export async function registerPgUser(input: RegisterPgInput): Promise<{
   }
   const email = normalizeEmail(parsed.data.email);
   const policy = authRateLimitConfig.register;
+  const registerCtx = authLogContextFor(email, input.ip);
   const ipCheck = await checkPgRateLimit(`register:ip:${input.ip}`, policy);
   if (!ipCheck.allowed) {
+    logAuthEvent("register_rate_limited", registerCtx);
     const err = new Error("Too many requests. Please try again later.") as Error & {
       status?: number;
       retryAfterSeconds?: number | null;
@@ -183,6 +192,7 @@ export async function registerPgUser(input: RegisterPgInput): Promise<{
 
   const passwordHash = await hashPassword(parsed.data.password);
   const role = parsed.data.role;
+  logAuthEvent("register_attempt", registerCtx);
   // The identifier is system-generated (never user-chosen, never squattable).
   const category = categoryForPublicRole(role);
   const verificationToken = newToken();
@@ -226,6 +236,17 @@ export async function registerPgUser(input: RegisterPgInput): Promise<{
     );
     return { userId, username };
   });
+
+  // Best-effort verification dispatch (never fails registration, never logs
+  // the token — local inspection stays behind LCSS_DEV_TOKENS responses).
+  try {
+    await resolveEmailProvider(emailProviderKind()).sendVerificationEmail({
+      to: email,
+      verifyUrl: verificationUrl(verificationToken),
+    });
+  } catch {
+    // Email delivery is auxiliary; registration already succeeded.
+  }
 
   return {
     user: {
@@ -298,7 +319,9 @@ export async function loginPgUser(input: {
   // Credential key (what was typed) + account key (who it resolves to).
   // The account key is what prevents bypass by switching between a user's
   // identifier and email: both resolve to the same users.id.
-  const credKey = `login:cred:${coerced.username.trim().toLowerCase()}`;
+  const rawHandle = coerced.username.trim();
+  const loginCtx = authLogContextFor(isEmailLike(rawHandle) ? normalizeEmail(rawHandle) : null, ip);
+  const credKey = `login:cred:${rawHandle.toLowerCase()}`;
   const user = await findUserByLoginHandle(coerced.username);
   const userKey = user ? `login:user:${user.id}` : null;
   const keys = [`login:ip:${ip}`, credKey, ...(userKey ? [userKey] : [])];
@@ -306,6 +329,7 @@ export async function loginPgUser(input: {
   const checks = await Promise.all(keys.map((k) => checkPgRateLimit(k, policy)));
   const blockedIdx = checks.findIndex((c) => !c.allowed);
   if (blockedIdx >= 0) {
+    logAuthEvent("login_rate_limited", loginCtx);
     throw rateLimitedLoginError(checks[blockedIdx].retryAfterSeconds);
   }
 
@@ -314,6 +338,7 @@ export async function loginPgUser(input: {
     : await verifyPassword(await dummyHashValue(), parsed.data.password).then(() => false);
   if (!user || !user.is_active || !passwordOk) {
     await Promise.all(keys.map((k) => recordPgFailure(k, policy)));
+    logAuthEvent("login_failure", loginCtx);
     throw new Error(GENERIC_PG_LOGIN_ERROR);
   }
 
@@ -326,6 +351,7 @@ export async function loginPgUser(input: {
   await Promise.all(keys.map((k) => recordPgSuccess(k)));
   const { token, expiresAt } = await createSession(user.id);
   await getPool().query("update public.users set last_login_at = now() where id = $1", [user.id]);
+  logAuthEvent("login_success", loginCtx);
   return {
     user: {
       id: user.id,
@@ -407,9 +433,11 @@ export async function requestPgPasswordReset(input: {
   const resolved = usable ? await findUserByLoginHandle(raw) : null;
   const userKey = resolved ? `recovery:user:${resolved.id}` : null;
   const keys = [`recovery:ip:${input.ip}`, credKey, ...(userKey ? [userKey] : [])];
+  const recoveryCtx = authLogContextFor(emailLike ? normalizedCred : null, input.ip);
   const checks = await Promise.all(keys.map((k) => checkPgRateLimit(k, policy)));
   const blockedIdx = checks.findIndex((c) => !c.allowed);
   if (blockedIdx >= 0) {
+    logAuthEvent("recovery_rate_limited", recoveryCtx);
     const err = new Error("Too many requests. Please try again later.") as Error & {
       status?: number;
       retryAfterSeconds?: number | null;
@@ -422,6 +450,7 @@ export async function requestPgPasswordReset(input: {
 
   const user = resolved;
   await Promise.all(keys.map((k) => recordPgFailure(k, policy)));
+  logAuthEvent("recovery_requested", recoveryCtx);
   if (!user) return {}; // Generic — never reveal whether the account exists.
 
   const token = newToken();
@@ -434,6 +463,15 @@ export async function requestPgPasswordReset(input: {
      values ($1, $2, now() + make_interval(secs => $3))`,
     [user.id, tokenHash(token), PASSWORD_RESET_TTL_SECONDS],
   );
+  // Best-effort reset dispatch (never fails the request, never logs tokens).
+  try {
+    await resolveEmailProvider(emailProviderKind()).sendPasswordResetEmail({
+      to: user.email,
+      resetUrl: passwordResetUrl(token),
+    });
+  } catch {
+    // Email delivery is auxiliary; the token row already exists.
+  }
   return devTokensExposed() ? { devToken: token } : {};
 }
 

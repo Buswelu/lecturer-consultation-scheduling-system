@@ -1,7 +1,9 @@
 # LCSS — Self-Managed PostgreSQL Guide
 
-> Local development database. Never commit real credentials to Git.
-> Supabase remains the live application backend until a later migration stage.
+> Never commit real credentials to Git. The app pool (`src/lib/db/pool.ts`)
+> is a process-wide singleton: max 10 connections, 30 s idle timeout, 10 s
+> connection timeout — suitable for local dev and small serverless fleets
+> (see `docs/DEPLOYMENT.md` §9 for production pooling notes).
 
 ## Assumptions
 

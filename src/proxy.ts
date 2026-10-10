@@ -19,8 +19,8 @@ const AUTH_PAGES = ["/login", "/register", "/forgot-password", "/reset-password"
  *   users on another role's area are redirected to their own dashboard.
  * - Signed-in users visiting auth pages bounce to their dashboard.
  *
- * Supabase middleware (`lib/supabase/middleware.ts`) is intentionally no
- * longer called — it remains on disk as rollback infrastructure only.
+ * PostgreSQL-only: no Supabase or mock session handling remains anywhere
+ * in the request path (retired in Stage 7).
  */
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
